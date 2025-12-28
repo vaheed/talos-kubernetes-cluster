@@ -1,39 +1,42 @@
-# Talos HA Kubernetes Cluster – Complete Production Guide
+# Talos HA Kubernetes Cluster – Complete Production Guide v2
 
-This is a **comprehensive, step-by-step guide** to build a **production-grade Talos Linux Kubernetes cluster** with high availability, dual storage classes, and private registry mirrors.
+This is a **comprehensive, production-ready guide** to build a **high-availability Talos Linux Kubernetes cluster** with dual storage classes, monitoring, and VMware integration.
 
-**Updated specifications:**
-- Network: `192.168.85.0/24`
-- 5 Control Planes with VIP
-- 5 Worker Nodes
-- Calico v3.29.7
-- MetalLB v0.14.9
-- Local Path Provisioner v0.0.33
-- LINSTOR distributed storage
-- VMware Tools integration
-- Kubernetes v1.33.7
+**Specifications:**
+- **Network**: `192.168.85.0/24`
+- **Talos**: v1.10.9 with VMware Tools (Factory Image)
+- **Kubernetes**: v1.33.7
+- **5 Control Planes** with VIP failover
+- **5 Worker Nodes** with `/dev/sdb` for distributed storage
+- **Calico**: v3.29.7 CNI
+- **MetalLB**: v0.14.9 LoadBalancer
+- **Local Path Provisioner**: v0.0.33
+- **LINSTOR**: Distributed replicated storage
+- **Metrics Server**: For resource monitoring
 
 ---
 
 ## Table of Contents
 
 1. [Cluster Topology](#cluster-topology)
-2. [Architecture Diagram](#architecture-diagram)
+2. [Architecture](#architecture)
 3. [Prerequisites](#prerequisites)
-4. [Install talosctl](#install-talosctl)
-5. [Generate Base Configuration](#generate-base-configuration)
-6. [VMware Tools Extension](#vmware-tools-extension)
-7. [Control Plane Configuration](#control-plane-configuration)
-8. [Worker Node Configuration](#worker-node-configuration)
-9. [Generate Final Configurations](#generate-final-configurations)
-10. [Apply Configurations](#apply-configurations)
-11. [Bootstrap Cluster](#bootstrap-cluster)
-12. [Install Calico CNI](#install-calico-cni)
-13. [Install MetalLB](#install-metallb)
+4. [Install Talos with VMware Tools](#install-talos-with-vmware-tools)
+5. [Install talosctl](#install-talosctl)
+6. [Generate Base Configuration](#generate-base-configuration)
+7. [Create Configuration Patches](#create-configuration-patches)
+8. [Generate Node Configurations](#generate-node-configurations)
+9. [Apply Configurations](#apply-configurations)
+10. [Bootstrap Cluster](#bootstrap-cluster)
+11. [Install Calico CNI](#install-calico-cni)
+12. [Install MetalLB](#install-metallb)
+13. [Install Metrics Server](#install-metrics-server)
 14. [Install Local Path Storage](#install-local-path-storage)
 15. [Install LINSTOR Storage](#install-linstor-storage)
 16. [Configure Pod Security](#configure-pod-security)
 17. [Verification](#verification)
+18. [Operations](#operations)
+19. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -48,51 +51,60 @@ This is a **comprehensive, step-by-step guide** to build a **production-grade Ta
 | VIP Hostname | vip.talos.vaheed.net |
 
 ### Control Plane Nodes
-| Name | IP Address |
-|------|------------|
-| cp-01 | 192.168.85.11 |
-| cp-02 | 192.168.85.12 |
-| cp-03 | 192.168.85.13 |
-| cp-04 | 192.168.85.14 |
-| cp-05 | 192.168.85.15 |
+| Name | IP Address | Role |
+|------|------------|------|
+| cp-01 | 192.168.85.11 | Control Plane |
+| cp-02 | 192.168.85.12 | Control Plane |
+| cp-03 | 192.168.85.13 | Control Plane |
+| cp-04 | 192.168.85.14 | Control Plane |
+| cp-05 | 192.168.85.15 | Control Plane |
 
 ### Worker Nodes
-| Name | IP Address |
-|------|------------|
-| worker-01 | 192.168.85.21 |
-| worker-02 | 192.168.85.22 |
-| worker-03 | 192.168.85.23 |
-| worker-04 | 192.168.85.24 |
-| worker-05 | 192.168.85.25 |
+| Name | IP Address | Storage Device |
+|------|------------|----------------|
+| worker-01 | 192.168.85.21 | /dev/sdb |
+| worker-02 | 192.168.85.22 | /dev/sdb |
+| worker-03 | 192.168.85.23 | /dev/sdb |
+| worker-04 | 192.168.85.24 | /dev/sdb |
+| worker-05 | 192.168.85.25 | /dev/sdb |
 
-### MetalLB LoadBalancer Pool
-| Pool Name | IP Range |
-|-----------|----------|
-| production-pool | 192.168.85.100 - 192.168.85.150 |
+### Service Ranges
+| Service | Range/Address |
+|---------|---------------|
+| MetalLB Pool | 192.168.85.100 - 192.168.85.150 |
+| Pod Network | 10.244.0.0/16 (Calico default) |
+| Service Network | 10.96.0.0/12 (Kubernetes default) |
 
 ---
 
-## Architecture Diagram
+## Architecture
 
 ```mermaid
 graph TD
-    GW[Gateway: 192.168.85.1]
-    VIP[VIP: 192.168.85.10<br/>vip.talos.vaheed.net]
+    GW[Gateway<br/>192.168.85.1]
+    VIP[VIP: 192.168.85.10<br/>vip.talos.vaheed.net<br/>HA Kubernetes API]
     
-    subgraph Control Plane
-        CP1[cp-01<br/>192.168.85.11]
-        CP2[cp-02<br/>192.168.85.12]
-        CP3[cp-03<br/>192.168.85.13]
-        CP4[cp-04<br/>192.168.85.14]
-        CP5[cp-05<br/>192.168.85.15]
+    subgraph "Control Plane - etcd Cluster"
+        CP1[cp-01<br/>192.168.85.11<br/>VMware Tools]
+        CP2[cp-02<br/>192.168.85.12<br/>VMware Tools]
+        CP3[cp-03<br/>192.168.85.13<br/>VMware Tools]
+        CP4[cp-04<br/>192.168.85.14<br/>VMware Tools]
+        CP5[cp-05<br/>192.168.85.15<br/>VMware Tools]
     end
     
-    subgraph Workers
-        W1[worker-01<br/>192.168.85.21<br/>/dev/sdb]
-        W2[worker-02<br/>192.168.85.22<br/>/dev/sdb]
-        W3[worker-03<br/>192.168.85.23<br/>/dev/sdb]
-        W4[worker-04<br/>192.168.85.24<br/>/dev/sdb]
-        W5[worker-05<br/>192.168.85.25<br/>/dev/sdb]
+    subgraph "Worker Nodes - Compute + Storage"
+        W1[worker-01<br/>192.168.85.21<br/>/dev/sdb DRBD]
+        W2[worker-02<br/>192.168.85.22<br/>/dev/sdb DRBD]
+        W3[worker-03<br/>192.168.85.23<br/>/dev/sdb DRBD]
+        W4[worker-04<br/>192.168.85.24<br/>/dev/sdb DRBD]
+        W5[worker-05<br/>192.168.85.25<br/>/dev/sdb DRBD]
+    end
+    
+    subgraph "Services"
+        LB[MetalLB<br/>192.168.85.100-150]
+        STOR1[Local Path<br/>Default SC]
+        STOR2[LINSTOR<br/>Replicated SC]
+        MON[Metrics Server]
     end
     
     GW --> VIP
@@ -102,11 +114,16 @@ graph TD
     VIP --> CP4
     VIP --> CP5
     
-    CP1 -.-> W1
-    CP2 -.-> W2
-    CP3 -.-> W3
-    CP4 -.-> W4
-    CP5 -.-> W5
+    CP1 -.Workload.-> W1
+    CP2 -.Workload.-> W2
+    CP3 -.Workload.-> W3
+    CP4 -.Workload.-> W4
+    CP5 -.Workload.-> W5
+    
+    W1 -.DRBD Replication.-> W2
+    W2 -.DRBD Replication.-> W3
+    W3 -.DRBD Replication.-> W4
+    W4 -.DRBD Replication.-> W5
 ```
 
 ---
@@ -114,28 +131,83 @@ graph TD
 ## Prerequisites
 
 ### Hardware Requirements
-- **Control Planes**: 5 VMs with 2+ CPU cores, 4GB+ RAM
-- **Workers**: 5 VMs with 4+ CPU cores, 8GB+ RAM
-- **Additional disk on workers**: `/dev/sdb` for LINSTOR storage (minimum 50GB per node)
+
+**Control Plane Nodes (each):**
+- 2+ vCPU cores
+- 4GB+ RAM
+- 50GB+ disk
+- Network interface: ens192
+
+**Worker Nodes (each):**
+- 4+ vCPU cores
+- 8GB+ RAM
+- 50GB+ OS disk (boot disk)
+- 100GB+ `/dev/sdb` for LINSTOR storage
+- Network interface: ens192
 
 ### Software Requirements
-- Talos Linux v1.10.9 installed on all nodes
-- Static IP networking configured
+
+- VMware vSphere environment
 - macOS/Linux workstation for management
 - `kubectl` installed on workstation
-- VMware environment (for VMware Tools integration)
+- Internet access for initial setup
+- DNS resolution for `vip.talos.vaheed.net` → `192.168.85.10`
 
 ### Network Requirements
-- All nodes on `192.168.85.0/24` network
+
+- All nodes on `192.168.85.0/24` subnet
 - Gateway at `192.168.85.1`
-- DNS resolution for `vip.talos.vaheed.net` → `192.168.85.10`
-- Private registry at `registry.vaheed.net` (various ports)
+- Private registry at `registry.vaheed.net` (optional)
+- Ports required:
+  - 6443: Kubernetes API
+  - 50000-51000: Talos API
+  - Pod-to-pod communication (all ports)
+
+---
+
+## Install Talos with VMware Tools
+
+### Factory Image Schematic
+
+Your custom Talos image with VMware Tools has been generated:
+
+**Schematic ID:** `903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40`
+
+**Extensions included:**
+- `siderolabs/vmtoolsd-guest-agent`
+
+### Download Installation ISO
+
+```bash
+# Download the ISO with VMware Tools included
+wget https://factory.talos.dev/image/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40/v1.10.9/metal-amd64.iso \
+  -O talos-vmware-1.10.9.iso
+```
+
+### Install on All Nodes
+
+1. **Upload ISO to vSphere datastore**
+2. **Create VMs** (10 total: 5 control planes + 5 workers)
+   - Configure according to hardware requirements above
+   - Add second disk (`/dev/sdb`) to workers only
+3. **Mount ISO and boot** each VM
+4. **Talos will run in maintenance mode** waiting for configuration
+
+### Verify Talos is Running
+
+From your workstation, check that nodes are accessible:
+
+```bash
+# Test connectivity to each node (should respond with maintenance mode info)
+curl -k https://192.168.85.11:50000/
+curl -k https://192.168.85.21:50000/
+```
 
 ---
 
 ## Install talosctl
 
-Download and install the Talos CLI tool on your workstation:
+Download and install the Talos CLI tool:
 
 ```bash
 # For macOS (Apple Silicon)
@@ -154,53 +226,36 @@ chmod +x talosctl-linux-amd64
 sudo mv talosctl-linux-amd64 /usr/local/bin/talosctl
 
 # Verify installation
-talosctl version
+talosctl version --client
 ```
 
 ---
 
 ## Generate Base Configuration
 
-Generate the initial cluster configuration files:
+Create the initial cluster configuration:
 
 ```bash
+# Generate base configs
 talosctl gen config "talos-cluster" "https://vip.talos.vaheed.net:6443" \
-  --kubernetes-version v1.33.7
+  --kubernetes-version v1.33.7 \
+  --install-image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.10.9
 ```
 
-This creates three files:
+**Files created:**
 - `controlplane.yaml` - Base control plane configuration
 - `worker.yaml` - Base worker configuration
-- `talosconfig` - Talos authentication configuration
+- `talosconfig` - Talos authentication
+
+**Important:** We specify the factory installer image so updates and installs use the VMware Tools-enabled version.
 
 ---
 
-## VMware Tools Extension
+## Create Configuration Patches
 
-Talos supports VMware Tools through system extensions. Create the VMware Tools extension configuration:
+### Control Plane Patch (cp-patch.yaml)
 
-### Create vmware-tools-extension.yaml
-
-```yaml
-machine:
-  install:
-    extensions:
-      - image: ghcr.io/siderolabs/vmtoolsd:v0.1.0
-```
-
-This extension will be merged into all node configurations to enable:
-- Better VM integration with vSphere
-- Improved network performance
-- VM guest information reporting
-- Graceful shutdown support
-
----
-
-## Control Plane Configuration
-
-### Create cp-patch.yaml
-
-This patch file contains all control plane-specific configurations:
+Create a file named `cp-patch.yaml`:
 
 ```yaml
 machine:
@@ -256,32 +311,33 @@ machine:
     - 192.168.85.14
     - 192.168.85.15
 
-  install:
-    extensions:
-      - image: ghcr.io/siderolabs/vmtoolsd:v0.1.0
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - 192.168.85.0/24
 
 cluster:
   network:
     cni:
       name: none
     dnsDomain: cluster.local
+  
+  allowSchedulingOnControlPlanes: false
 ```
 
 **Key configurations:**
-- **VIP**: Floating IP `192.168.85.10` for HA control plane access
-- **Host entries**: All cluster nodes in `/etc/hosts`
-- **Registry mirrors**: Private registry for faster pulls and offline capability
-- **Cert SANs**: All control plane IPs and VIP hostname
-- **VMware Tools**: Extension for VMware integration
-- **CNI**: Set to `none` (we'll install Calico manually)
+- **VIP**: Shared IP `192.168.85.10` for HA API access
+- **Host entries**: Internal DNS for all nodes
+- **Registry mirrors**: Optional private registry
+- **Cert SANs**: All valid API endpoints
+- **CNI**: None (manual Calico installation)
+- **Scheduling**: Workloads only on workers
 
 ---
 
-## Worker Node Configuration
+### Worker Patch (worker-patch.yaml)
 
-### Create worker-patch.yaml
-
-This patch file contains all worker-specific configurations:
+Create a file named `worker-patch.yaml`:
 
 ```yaml
 machine:
@@ -323,11 +379,10 @@ machine:
       registry.k8s.io:
         endpoints: ["https://registry.vaheed.net:2096"]
 
-  install:
-    extensions:
-      - image: ghcr.io/siderolabs/vmtoolsd:v0.1.0
-
   kubelet:
+    nodeIP:
+      validSubnets:
+        - 192.168.85.0/24
     extraMounts:
       - destination: /var/lib/linstor
         type: bind
@@ -343,29 +398,26 @@ cluster:
 ```
 
 **Key configurations:**
-- **Host entries**: Same as control planes for node-to-node communication
-- **Registry mirrors**: Identical to control planes
-- **VMware Tools**: Extension included
-- **Kubelet mounts**: Special mount for LINSTOR storage driver
+- **Host entries**: Same as control planes
+- **Registry mirrors**: Same as control planes
+- **LINSTOR mount**: Required for CSI driver
 - **No VIP**: Workers don't participate in VIP
 
 ---
 
-## Generate Final Configurations
-
-Now we'll generate individual configuration files for each node by merging patches and adding node-specific network settings.
+## Generate Node Configurations
 
 ### Control Plane Nodes
+
+Generate individual configs for each control plane:
 
 #### cp-01 (192.168.85.11)
 
 ```bash
-# Apply base control plane patch
 talosctl machineconfig patch controlplane.yaml \
   --patch @cp-patch.yaml \
   --output cp-01.yaml
 
-# Add node-specific network configuration
 talosctl machineconfig patch cp-01.yaml \
   --patch '[{"op":"replace","path":"/machine/network/interfaces","value":[{"interface":"ens192","dhcp":false,"addresses":["192.168.85.11/24"],"routes":[{"network":"0.0.0.0/0","gateway":"192.168.85.1"}],"vip":{"ip":"192.168.85.10"}}]}]' \
   --output cp-01.yaml
@@ -423,15 +475,15 @@ talosctl machineconfig patch cp-05.yaml \
 
 ### Worker Nodes
 
+Generate individual configs for each worker:
+
 #### worker-01 (192.168.85.21)
 
 ```bash
-# Apply base worker patch
 talosctl machineconfig patch worker.yaml \
   --patch @worker-patch.yaml \
   --output worker-01.yaml
 
-# Add node-specific network configuration
 talosctl machineconfig patch worker-01.yaml \
   --patch '[{"op":"replace","path":"/machine/network/interfaces","value":[{"interface":"ens192","dhcp":false,"addresses":["192.168.85.21/24"],"routes":[{"network":"0.0.0.0/0","gateway":"192.168.85.1"}]}]}]' \
   --output worker-01.yaml
@@ -489,112 +541,125 @@ talosctl machineconfig patch worker-05.yaml \
 
 ## Apply Configurations
 
-Now apply the generated configurations to each node. The `--insecure` flag is used for initial configuration when nodes don't have certificates yet.
+Apply the generated configurations to each node. Use `--insecure` for initial configuration.
 
-### Apply to Control Plane Nodes
+### Apply to Control Planes
 
 ```bash
+echo "Applying configuration to cp-01..."
 talosctl apply-config --insecure --nodes 192.168.85.11 --file cp-01.yaml
+
+echo "Applying configuration to cp-02..."
 talosctl apply-config --insecure --nodes 192.168.85.12 --file cp-02.yaml
+
+echo "Applying configuration to cp-03..."
 talosctl apply-config --insecure --nodes 192.168.85.13 --file cp-03.yaml
+
+echo "Applying configuration to cp-04..."
 talosctl apply-config --insecure --nodes 192.168.85.14 --file cp-04.yaml
+
+echo "Applying configuration to cp-05..."
 talosctl apply-config --insecure --nodes 192.168.85.15 --file cp-05.yaml
 ```
 
-### Apply to Worker Nodes
+### Apply to Workers
 
 ```bash
+echo "Applying configuration to worker-01..."
 talosctl apply-config --insecure --nodes 192.168.85.21 --file worker-01.yaml
+
+echo "Applying configuration to worker-02..."
 talosctl apply-config --insecure --nodes 192.168.85.22 --file worker-02.yaml
+
+echo "Applying configuration to worker-03..."
 talosctl apply-config --insecure --nodes 192.168.85.23 --file worker-03.yaml
+
+echo "Applying configuration to worker-04..."
 talosctl apply-config --insecure --nodes 192.168.85.24 --file worker-04.yaml
+
+echo "Applying configuration to worker-05..."
 talosctl apply-config --insecure --nodes 192.168.85.25 --file worker-05.yaml
 ```
 
 ### Wait for Nodes to Initialize
 
-After applying configurations, nodes will reboot and initialize. Wait approximately 10 minutes:
-
 ```bash
+echo "Waiting 10 minutes for all nodes to initialize..."
 sleep 600
 ```
 
-**What happens during this time:**
-- Nodes reboot with new configurations
-- Network interfaces are reconfigured
-- VMware Tools extension is installed
-- System services start
-- Nodes become ready for bootstrapping
+**What happens:**
+- Nodes reboot and apply configuration
+- Network interfaces configured with static IPs
+- VMware Tools starts
+- Nodes enter ready state for bootstrapping
 
 ---
 
 ## Bootstrap Cluster
 
-Bootstrap initializes the Kubernetes control plane on the first control plane node and creates the etcd cluster.
+Bootstrap creates the Kubernetes control plane and etcd cluster.
 
-### Bootstrap the First Control Plane
+### Bootstrap First Control Plane
 
 ```bash
+echo "Bootstrapping cluster on cp-01..."
 talosctl --talosconfig talosconfig bootstrap \
   --endpoints 192.168.85.11 \
   --nodes 192.168.85.11
 ```
 
-**Important:** Only bootstrap once, on one control plane node. Other control planes will join automatically.
+**Important:** Only bootstrap ONCE on ONE control plane node!
 
-### Verify VIP is Active
+### Wait for Bootstrap
+
+```bash
+echo "Waiting 5 minutes for cluster to initialize..."
+sleep 300
+```
+
+### Verify VIP
 
 ```bash
 # Test VIP connectivity
+echo "Testing VIP connectivity..."
 ping -c 4 192.168.85.10
 
-# Check cluster membership through VIP
+# Check cluster members
+echo "Checking cluster members..."
 talosctl --talosconfig talosconfig \
   --endpoints 192.168.85.10 \
   --nodes 192.168.85.10 \
   get members
 ```
 
-You should see all 5 control plane nodes listed.
+Expected: All 5 control plane nodes listed.
 
-### Wait for Cluster to Stabilize
-
-```bash
-sleep 300
-```
-
----
-
-## Retrieve kubeconfig
-
-Generate the Kubernetes configuration file to interact with the cluster:
+### Retrieve kubeconfig
 
 ```bash
+echo "Retrieving kubeconfig..."
 talosctl --talosconfig talosconfig kubeconfig . \
   --nodes 192.168.85.11 \
   --endpoints 192.168.85.11 \
   --force
-```
 
-This creates a `kubeconfig` file in the current directory.
-
-### Test Kubernetes Access
-
-```bash
+# Test access
 kubectl --kubeconfig=kubeconfig get nodes
 ```
 
-You should see all 10 nodes, but they will be in `NotReady` state until we install a CNI.
+Nodes will be `NotReady` until CNI is installed.
 
 ---
 
 ## Install Calico CNI
 
-Calico provides networking and network policy for Kubernetes. We're using version 3.29.7.
+Install Calico v3.29.7 for pod networking.
 
 ### Install Tigera Operator
 
 ```bash
+echo "Installing Calico Tigera Operator..."
 kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/projectcalico/calico/v3.29.7/manifests/tigera-operator.yaml
 ```
@@ -602,55 +667,56 @@ kubectl --kubeconfig=kubeconfig apply -f \
 ### Install Calico Custom Resources
 
 ```bash
+echo "Installing Calico custom resources..."
 kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/projectcalico/calico/v3.29.7/manifests/custom-resources.yaml
 ```
 
-### Wait for Calico to Deploy
+### Wait for Calico
 
 ```bash
-# Watch Calico pods come up
-kubectl --kubeconfig=kubeconfig get pods -n calico-system -w
+echo "Waiting for Calico to be ready..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l k8s-app=calico-node \
+  -n calico-system \
+  --timeout=300s
 
-# Or wait with a sleep
-sleep 120
-```
-
-### Verify Node Status
-
-```bash
+echo "Checking node status..."
 kubectl --kubeconfig=kubeconfig get nodes
 ```
 
-All nodes should now be in `Ready` state.
+All nodes should now be `Ready`.
 
 ---
 
 ## Install MetalLB
 
-MetalLB provides LoadBalancer services in bare metal and VM environments. We're using version 0.14.9.
+Install MetalLB v0.14.9 for LoadBalancer services.
 
 ### Deploy MetalLB
 
 ```bash
+echo "Installing MetalLB..."
 kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/metallb/metallb/v0.14.9/config/manifests/metallb-native.yaml
 ```
 
-### Wait for MetalLB to Be Ready
+### Wait for MetalLB
 
 ```bash
-sleep 180
+echo "Waiting for MetalLB to be ready..."
+sleep 120
 
-# Verify MetalLB pods are running
-kubectl --kubeconfig=kubeconfig get pods -n metallb-system
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=metallb \
+  -n metallb-system \
+  --timeout=300s
 ```
 
-### Configure IP Address Pool
-
-Create an IPAddressPool and L2Advertisement:
+### Configure IP Pool
 
 ```bash
+echo "Configuring MetalLB IP pool..."
 kubectl --kubeconfig=kubeconfig apply -f - <<EOF
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
@@ -672,33 +738,68 @@ spec:
 EOF
 ```
 
-**Configuration details:**
-- **Pool range**: 192.168.85.100-192.168.85.150 (51 available IPs)
-- **Mode**: Layer 2 (ARP-based)
-- **Namespace**: metallb-system
-
-### Test MetalLB
+### Verify MetalLB
 
 ```bash
-# Create a test service
-kubectl --kubeconfig=kubeconfig create deployment nginx --image=nginx
-kubectl --kubeconfig=kubeconfig expose deployment nginx --port=80 --type=LoadBalancer
-
-# Check if an external IP was assigned
-kubectl --kubeconfig=kubeconfig get svc nginx
+kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system
 ```
 
-You should see an IP from the range 192.168.85.100-192.168.85.150 assigned.
+---
+
+## Install Metrics Server
+
+Install Metrics Server for resource monitoring and `kubectl top` commands.
+
+### Deploy Metrics Server
+
+Following Talos documentation for metrics server:
+
+```bash
+echo "Installing Metrics Server..."
+kubectl --kubeconfig=kubeconfig apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+### Patch for Talos Compatibility
+
+Talos uses different kubelet certificates, so we need to patch metrics-server:
+
+```bash
+echo "Patching Metrics Server for Talos..."
+kubectl --kubeconfig=kubeconfig patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-preferred-address-types=InternalIP"}]'
+
+kubectl --kubeconfig=kubeconfig patch deployment metrics-server -n kube-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+```
+
+### Wait for Metrics Server
+
+```bash
+echo "Waiting for Metrics Server to be ready..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l k8s-app=metrics-server \
+  -n kube-system \
+  --timeout=300s
+```
+
+### Verify Metrics
+
+```bash
+echo "Testing metrics collection..."
+sleep 30
+kubectl --kubeconfig=kubeconfig top nodes
+```
 
 ---
 
 ## Install Local Path Storage
 
-Local Path Provisioner creates persistent volumes using local storage on worker nodes. We're using version 0.0.33.
+Install Local Path Provisioner v0.0.33 for local node storage.
 
 ### Deploy Local Path Provisioner
 
 ```bash
+echo "Installing Local Path Provisioner..."
 kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.33/deploy/local-path-storage.yaml
 ```
@@ -706,266 +807,352 @@ kubectl --kubeconfig=kubeconfig apply -f \
 ### Set as Default Storage Class
 
 ```bash
+echo "Setting local-path as default storage class..."
 kubectl --kubeconfig=kubeconfig patch storageclass local-path \
   -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
 ```
 
-### Verify Storage Class
+### Verify
 
 ```bash
 kubectl --kubeconfig=kubeconfig get storageclass
 ```
 
-You should see `local-path` marked as `(default)`.
-
-### Test Local Path Storage
-
-```bash
-# Create a test PVC
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: test-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
-EOF
-
-# Check PVC status
-kubectl --kubeconfig=kubeconfig get pvc test-pvc
-```
-
-The PVC should be in `Bound` state.
-
 ---
 
 ## Install LINSTOR Storage
 
-LINSTOR provides distributed, replicated block storage using DRBD. It will use `/dev/sdb` on all worker nodes.
+Install LINSTOR for distributed, replicated block storage using `/dev/sdb` on workers.
 
-### Prerequisites Check
+### Prerequisites
 
-Verify that `/dev/sdb` exists on all worker nodes:
+Verify `/dev/sdb` exists on all workers:
 
 ```bash
+echo "Verifying /dev/sdb on workers..."
 for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
   echo "Checking $node..."
-  talosctl --talosconfig talosconfig --nodes $node list /dev/sdb
+  talosctl --talosconfig talosconfig --nodes $node list /dev/ | grep sdb
 done
+```
+
+### Install kubectl-linstor Plugin
+
+Install the kubectl-linstor plugin to manage LINSTOR:
+
+```bash
+# For Linux/macOS
+curl -fsSL https://github.com/piraeusdatastore/kubectl-linstor/releases/latest/download/kubectl-linstor-linux-amd64 -o kubectl-linstor
+chmod +x kubectl-linstor
+sudo mv kubectl-linstor /usr/local/bin/
+
+# Verify installation
+kubectl linstor version
 ```
 
 ### Install LINSTOR Operator
 
 ```bash
-kubectl --kubeconfig=kubeconfig apply -f \
-  https://charts.linstor.io/piraeus-operator-crds.yaml
+echo "Installing LINSTOR operator..."
+kubectl --kubeconfig=kubeconfig apply --server-side -k "https://github.com/piraeusdatastore/piraeus-operator//config/default?ref=v2"
+```
 
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+### Wait for Operator
+
+```bash
+echo "Waiting for LINSTOR operator..."
+kubectl --kubeconfig=kubeconfig wait pod --timeout=300s --for=condition=Ready \
+  -n piraeus-datastore \
+  -l app.kubernetes.io/component=piraeus-operator
+```
+
+### Prepare Storage on Workers
+
+Create LVM volume groups on `/dev/sdb` for all workers:
+
+```bash
+echo "Preparing LVM storage on workers..."
+kubectl --kubeconfig=kubeconfig apply -f - <<'EOF'
 apiVersion: v1
-kind: Namespace
+kind: ConfigMap
 metadata:
-  name: piraeus-datastore
+  name: lvm-prepare-script
+  namespace: kube-system
+data:
+  prepare.sh: |
+    #!/bin/sh
+    set -e
+    
+    # Check if /dev/sdb exists
+    if [ ! -b "/dev/sdb" ]; then
+      echo "ERROR: /dev/sdb not found"
+      exit 1
+    fi
+    
+    # Check if VG already exists
+    if vgs linstor_vg >/dev/null 2>&1; then
+      echo "Volume group linstor_vg already exists"
+      vgs linstor_vg
+      exit 0
+    fi
+    
+    # Create physical volume and volume group
+    echo "Creating PV on /dev/sdb..."
+    pvcreate /dev/sdb
+    
+    echo "Creating VG linstor_vg..."
+    vgcreate linstor_vg /dev/sdb
+    
+    echo "LVM setup complete"
+    vgs linstor_vg
 ---
-apiVersion: helm.toolkit.fluxcd.io/v2beta1
-kind: HelmRelease
-metadata:
-  name: piraeus-operator
-  namespace: piraeus-datastore
-spec:
-  interval: 5m
-  chart:
-    spec:
-      chart: piraeus-operator
-      version: 2.10.0
-      sourceRef:
-        kind: HelmRepository
-        name: piraeus-charts
-        namespace: piraeus-datastore
-      interval: 1m
-  values:
-    operator:
-      controller:
-        enabled: true
-EOF
-```
-
-**Note:** If you don't have Flux CD installed, use Helm directly:
-
-```bash
-# Add LINSTOR Helm repository
-helm repo add linstor https://charts.linstor.io
-helm repo update
-
-# Create namespace
-kubectl --kubeconfig=kubeconfig create namespace piraeus-datastore
-
-# Install Piraeus Operator
-helm --kubeconfig=kubeconfig install piraeus-operator linstor/piraeus-operator \
-  --namespace piraeus-datastore \
-  --version 2.10.0
-```
-
-### Wait for Operator to Deploy
-
-```bash
-sleep 120
-
-kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore
-```
-
-### Create LINSTOR Cluster Configuration
-
-```bash
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
-apiVersion: piraeus.io/v1
-kind: LinstorCluster
-metadata:
-  name: linstor
-  namespace: piraeus-datastore
-spec:
-  patches:
-    - target:
-        kind: Pod
-      patch: |
-        - op: add
-          path: /spec/containers/0/securityContext
-          value:
-            privileged: true
-  linstorController:
-    enabled: true
-  linstorSatelliteSet:
-    enabled: true
-    automaticStorageType: None
-    storagePools:
-      - name: lvm-thick
-        lvmPool:
-          volumeGroup: linstor_vg
-  linstorCSIDriver:
-    enabled: true
-EOF
-```
-
-### Prepare Storage on Worker Nodes
-
-For each worker node, we need to create an LVM volume group on `/dev/sdb`:
-
-```bash
-# Create a DaemonSet to prepare storage
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: linstor-storage-prep
-  namespace: piraeus-datastore
+  name: lvm-prepare
+  namespace: kube-system
 spec:
   selector:
     matchLabels:
-      app: linstor-storage-prep
+      app: lvm-prepare
   template:
     metadata:
       labels:
-        app: linstor-storage-prep
+        app: lvm-prepare
     spec:
       nodeSelector:
         node-role.kubernetes.io/worker: ""
       hostNetwork: true
       hostPID: true
-      containers:
-      - name: storage-prep
-        image: alpine:latest
+      initContainers:
+      - name: lvm-setup
+        image: alpine:3.19
         command:
         - sh
-        - -c
-        - |
-          apk add lvm2
-          if ! vgs linstor_vg; then
-            pvcreate /dev/sdb
-            vgcreate linstor_vg /dev/sdb
-            echo "Volume group linstor_vg created"
-          else
-            echo "Volume group linstor_vg already exists"
-          fi
-          sleep infinity
+        - /scripts/prepare.sh
         securityContext:
           privileged: true
         volumeMounts:
         - name: dev
           mountPath: /dev
+        - name: scripts
+          mountPath: /scripts
+      containers:
+      - name: sleep
+        image: alpine:3.19
+        command: ["sh", "-c", "echo 'LVM setup complete'; sleep infinity"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
       volumes:
       - name: dev
         hostPath:
           path: /dev
+      - name: scripts
+        configMap:
+          name: lvm-prepare-script
+          defaultMode: 0755
 EOF
 ```
 
-Wait for the DaemonSet to run on all workers:
+Wait for LVM preparation:
 
 ```bash
-kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore -l app=linstor-storage-prep
+echo "Waiting for LVM preparation to complete..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=lvm-prepare \
+  -n kube-system \
+  --timeout=300s
+
+echo "Checking LVM setup on workers..."
+kubectl --kubeconfig=kubeconfig logs -n kube-system -l app=lvm-prepare --tail=20
+```
+
+### Create LINSTOR Cluster
+
+```bash
+echo "Creating LINSTOR cluster..."
+kubectl --kubeconfig=kubeconfig apply -f - <<'EOF'
+apiVersion: piraeus.io/v1
+kind: LinstorCluster
+metadata:
+  name: linstor
+spec:
+  repository: quay.io/piraeusdatastore
+  
+  linstorController:
+    enabled: true
+    replicas: 1
+    
+  linstorSatelliteSet:
+    enabled: true
+    automaticStorageType: None
+    storagePools:
+      lvmPools:
+      - name: lvm-thin
+        volumeGroup: linstor_vg
+  
+  linstorCSIDriver:
+    enabled: true
+    nodeAffinity:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: node-role.kubernetes.io/worker
+          operator: Exists
+EOF
+```
+
+### Wait for LINSTOR Deployment
+
+```bash
+echo "Waiting for LINSTOR components..."
+sleep 120
+
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app.kubernetes.io/name=piraeus-datastore \
+  -n piraeus-datastore \
+  --timeout=600s
 ```
 
 ### Verify LINSTOR Storage Pools
 
 ```bash
-# Get LINSTOR controller pod
-LINSTOR_POD=$(kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore \
-  -l app.kubernetes.io/component=linstor-controller -o name | head -1)
-
-# List storage pools
-kubectl --kubeconfig=kubeconfig exec -n piraeus-datastore $LINSTOR_POD -- \
-  linstor storage-pool list
+echo "Checking LINSTOR storage pools..."
+kubectl --kubeconfig=kubeconfig linstor storage-pool list
 ```
 
-You should see `lvm-thick` pools on all worker nodes.
+You should see `lvm-thin` pools on all 5 workers.
 
-### Create LINSTOR Storage Class
+### Create LINSTOR Storage Classes
 
 ```bash
+echo "Creating LINSTOR storage classes..."
 kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: linstor-lvm-r1
+provisioner: linstor.csi.linbit.com
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  autoPlace: "1"
+  storagePool: "lvm-thin"
+---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: linstor-lvm-r2
 provisioner: linstor.csi.linbit.com
-parameters:
-  linstor.csi.linbit.com/autoPlace: "2"
-  linstor.csi.linbit.com/storagePool: "lvm-thick"
-  csi.storage.k8s.io/fstype: "ext4"
 allowVolumeExpansion: true
 volumeBindingMode: WaitForFirstConsumer
+parameters:
+  autoPlace: "2"
+  storagePool: "lvm-thin"
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: linstor-lvm-r3
 provisioner: linstor.csi.linbit.com
-parameters:
-  linstor.csi.linbit.com/autoPlace: "3"
-  linstor.csi.linbit.com/storagePool: "lvm-thick"
-  csi.storage.k8s.io/fstype: "ext4"
 allowVolumeExpansion: true
 volumeBindingMode: WaitForFirstConsumer
+parameters:
+  autoPlace: "3"
+  storagePool: "lvm-thin"
 EOF
 ```
 
-**Storage Classes created:**
-- `linstor-lvm-r2`: 2-way replication (data on 2 nodes)
-- `linstor-lvm-r3`: 3-way replication (data on 3 nodes)
-
-### Verify LINSTOR Storage Classes
+### Verify Storage Classes
 
 ```bash
-kubectl --kubeconfig=kubeconfig get storageclass | grep linstor
+kubectl --kubeconfig=kubeconfig get storageclass
 ```
 
-### Test LINSTOR Storage
+Expected output:
+- `local-path` (default)
+- `linstor-lvm-r1` (no replication)
+- `linstor-lvm-r2` (2-way replication)
+- `linstor-lvm-r3` (3-way replication)
+
+---
+
+## Configure Pod Security
+
+Enable privileged pods in default namespace:
 
 ```bash
-# Create a test PVC with replication
+echo "Configuring pod security..."
+kubectl --kubeconfig=kubeconfig label namespace default \
+  pod-security.kubernetes.io/enforce=privileged \
+  --overwrite
+```
+
+---
+
+## Verification
+
+### Complete Cluster Health Check
+
+```bash
+echo "=== CLUSTER HEALTH CHECK ==="
+
+echo -e "\n1. Node Status:"
+kubectl --kubeconfig=kubeconfig get nodes -o wide
+
+echo -e "\n2. System Pods:"
+kubectl --kubeconfig=kubeconfig get pods -A | grep -E 'kube-system|calico|metallb|piraeus'
+
+echo -e "\n3. Storage Classes:"
+kubectl --kubeconfig=kubeconfig get storageclass
+
+echo -e "\n4. MetalLB Configuration:"
+kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system
+
+echo -e "\n5. LINSTOR Storage Pools:"
+kubectl --kubeconfig=kubeconfig linstor storage-pool list
+
+echo -e "\n6. Node Resource Usage:"
+kubectl --kubeconfig=kubeconfig top nodes
+
+echo -e "\n7. VMware Tools Status (cp-01):"
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 services | grep vmtoolsd
+
+echo -e "\n8. VIP Status:"
+ping -c 2 192.168.85.10
+```
+
+### Test Storage
+
+#### Test Local Path Storage
+
+```bash
+echo "Testing local-path storage..."
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-local-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+kubectl --kubeconfig=kubeconfig get pvc test-local-pvc
+```
+
+#### Test LINSTOR Storage
+
+```bash
+echo "Testing LINSTOR storage with 3-way replication..."
 kubectl --kubeconfig=kubeconfig apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -980,211 +1167,183 @@ spec:
       storage: 5Gi
 EOF
 
-# Check PVC status
+sleep 10
 kubectl --kubeconfig=kubeconfig get pvc test-linstor-pvc
 
-# Verify in LINSTOR
-kubectl --kubeconfig=kubeconfig exec -n piraeus-datastore $LINSTOR_POD -- \
-  linstor resource list
+echo "Checking LINSTOR resources:"
+kubectl --kubeconfig=kubeconfig linstor resource list
 ```
 
----
-
-## Configure Pod Security
-
-Label the default namespace to allow privileged pods (required for some system workloads):
+### Test MetalLB
 
 ```bash
-kubectl --kubeconfig=kubeconfig label namespace default \
-  pod-security.kubernetes.io/enforce=privileged
+echo "Testing MetalLB LoadBalancer..."
+kubectl --kubeconfig=kubeconfig create deployment nginx-test --image=nginx
+kubectl --kubeconfig=kubeconfig expose deployment nginx-test --port=80 --type=LoadBalancer
+
+sleep 15
+kubectl --kubeconfig=kubeconfig get svc nginx-test
+
+# Get the LoadBalancer IP
+LB_IP=$(kubectl --kubeconfig=kubeconfig get svc nginx-test -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "LoadBalancer IP: $LB_IP"
+echo "Testing connectivity:"
+curl -s http://$LB_IP | grep -o "<title>.*</title>"
 ```
-
----
-
-## Verification
-
-### Check All Nodes
-
-```bash
-kubectl --kubeconfig=kubeconfig get nodes -o wide
-```
-
-Expected output: 5 control planes + 5 workers, all `Ready`.
-
-### Check Storage Classes
-
-```bash
-kubectl --kubeconfig=kubeconfig get storageclass
-```
-
-Expected output:
-- `local-path` (default)
-- `linstor-lvm-r2`
-- `linstor-lvm-r3`
-
-### Check MetalLB Configuration
-
-```bash
-kubectl --kubeconfig=kubeconfig get ipaddresspool -n metallb-system
-kubectl --kubeconfig=kubeconfig get l2advertisement -n metallb-system
-```
-
-### Check VMware Tools Status
-
-```bash
-# Check on any node
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 services
-```
-
-Look for `vmtoolsd` service running.
 
 ### Test VIP Failover
 
 ```bash
-# Shutdown first control plane
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 shutdown
+echo "Testing VIP failover..."
+echo "Current VIP holder:"
+talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
 
-# Wait 30 seconds
+echo "Rebooting cp-01 to test failover..."
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 reboot
+
 sleep 30
+echo "VIP should have moved to another control plane:"
+talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
 
-# Try accessing via VIP (should still work)
+echo "Kubernetes API still accessible:"
+kubectl --kubeconfig=kubeconfig get nodes
+```
+
+---
+
+## Operations
+
+### Daily Operations
+
+#### Check Cluster Health
+
+```bash
+# Node status
 kubectl --kubeconfig=kubeconfig get nodes
 
-# Check which node is handling VIP
-for node in 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15; do
-  echo "Checking $node..."
-  talosctl --talosconfig talosconfig --nodes $node get links | grep 192.168.85.10
-done
-```
-
-### Check System Pods
-
-```bash
+# Pod status across all namespaces
 kubectl --kubeconfig=kubeconfig get pods -A
-```
 
-Verify all system pods are running in:
-- `kube-system`
-- `calico-system`
-- `metallb-system`
-- `piraeus-datastore`
-
----
-
-## Cluster Summary
-
-### What We've Built
-
-✅ **High Availability Control Plane**
-- 5 control plane nodes with floating VIP
-- Automatic failover using built-in VIP mechanism
-- Kubernetes API accessible at `vip.talos.vaheed.net:6443`
-
-✅ **Worker Pool**
-- 5 dedicated worker nodes
-- Separate from control plane for better resource isolation
-
-✅ **Networking**
-- Calico v3.29.7 CNI with full network policy support
-- MetalLB v0.14.9 for LoadBalancer services (192.168.85.100-150)
-- Private registry mirrors for all major registries
-
-✅ **Storage**
-- **Local Path Provisioner v0.0.33**: Fast local storage, default class
-- **LINSTOR with DRBD**: Distributed, replicated block storage on `/dev/sdb`
-  - 2-way replication option
-  - 3-way replication option
-  - Automatic volume expansion
-
-✅ **VMware Integration**
-- VMware Tools installed on all nodes
-- Better performance and monitoring integration
-
-✅ **Security**
-- Pod Security Standards configured
-- Network policies available through Calico
-- Private registry for image security
-
----
-
-## Operational Commands
-
-### Talos Management
-
-```bash
-# Check node health
-talosctl --talosconfig talosconfig --nodes 192.168.85.10 health
-
-# View logs
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 logs
-
-# Execute maintenance mode
-talosctl --talosconfig talosconfig --nodes 192.168.85.21 upgrade \
-  --image ghcr.io/siderolabs/installer:v1.10.9
-
-# Reboot a node gracefully
-talosctl --talosconfig talosconfig --nodes 192.168.85.21 reboot
-
-# Check etcd members
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 etcd members
-```
-
-### Kubernetes Operations
-
-```bash
-# Scale a deployment
-kubectl --kubeconfig=kubeconfig scale deployment nginx --replicas=5
-
-# View cluster info
-kubectl --kubeconfig=kubeconfig cluster-info
-
-# Check resource usage
+# Resource usage
 kubectl --kubeconfig=kubeconfig top nodes
-kubectl --kubeconfig=kubeconfig top pods -A
+kubectl --kubeconfig=kubeconfig top pods -A --sort-by=memory
+```
 
-# Drain a node for maintenance
-kubectl --kubeconfig=kubeconfig drain worker-01 --ignore-daemonsets --delete-emptydir-data
+#### Check Storage
 
-# Uncordon after maintenance
+```bash
+# Storage class availability
+kubectl --kubeconfig=kubeconfig get storageclass
+
+# PVC status
+kubectl --kubeconfig=kubeconfig get pvc -A
+
+# LINSTOR resources
+kubectl --kubeconfig=kubeconfig linstor resource list
+kubectl --kubeconfig=kubeconfig linstor storage-pool list
+kubectl --kubeconfig=kubeconfig linstor volume list
+```
+
+#### Check Services
+
+```bash
+# LoadBalancer services
+kubectl --kubeconfig=kubeconfig get svc -A --field-selector spec.type=LoadBalancer
+
+# MetalLB IP pool usage
+kubectl --kubeconfig=kubeconfig get ipaddresspool -n metallb-system -o yaml
+```
+
+### Maintenance Operations
+
+#### Drain Node for Maintenance
+
+```bash
+# Drain worker node
+kubectl --kubeconfig=kubeconfig drain worker-01 \
+  --ignore-daemonsets \
+  --delete-emptydir-data \
+  --grace-period=300
+
+# Perform maintenance on the node
+
+# Uncordon when complete
 kubectl --kubeconfig=kubeconfig uncordon worker-01
 ```
 
-### LINSTOR Operations
+#### Upgrade Kubernetes
 
 ```bash
-# Get LINSTOR controller pod
-LINSTOR_POD=$(kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore \
-  -l app.kubernetes.io/component=linstor-controller -o name | head -1)
+# Upgrade control planes (one at a time)
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  upgrade-k8s --to 1.33.8
 
-# List all resources
-kubectl --kubeconfig=kubeconfig exec -n piraeus-datastore $LINSTOR_POD -- \
-  linstor resource list
+# Wait for completion, check health
+kubectl --kubeconfig=kubeconfig get nodes
 
-# Check storage pool capacity
-kubectl --kubeconfig=kubeconfig exec -n piraeus-datastore $LINSTOR_POD -- \
-  linstor storage-pool list
+# Repeat for other control planes
 
-# View resource definition
-kubectl --kubeconfig=kubeconfig exec -n piraeus-datastore $LINSTOR_POD -- \
-  linstor resource-definition list
+# Upgrade workers
+for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
+  kubectl --kubeconfig=kubeconfig drain $node --ignore-daemonsets --delete-emptydir-data
+  talosctl --talosconfig talosconfig --nodes $node upgrade-k8s --to 1.33.8
+  kubectl --kubeconfig=kubeconfig uncordon $node
+  sleep 60
+done
+```
+
+#### Upgrade Talos
+
+```bash
+# Upgrade control planes one at a time
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 upgrade \
+  --image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.11.0
+
+# Wait for node to come back
+sleep 180
+
+# Repeat for other control planes
+
+# Upgrade workers
+for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
+  kubectl --kubeconfig=kubeconfig drain $node --ignore-daemonsets --delete-emptydir-data
+  talosctl --talosconfig talosconfig --nodes $node upgrade \
+    --image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.11.0
+  sleep 180
+  kubectl --kubeconfig=kubeconfig uncordon $node
+done
+```
+
+### Backup Operations
+
+#### Backup etcd
+
+```bash
+# Create etcd snapshot
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  etcd snapshot /var/lib/etcd/backup-$(date +%Y%m%d-%H%M%S).db
+
+# List snapshots
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  ls /var/lib/etcd/
+
+# Download snapshot
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  cp /var/lib/etcd/backup-*.db ./
+```
+
+#### Backup Configurations
+
+```bash
+# Backup all configuration files
+mkdir -p cluster-backup-$(date +%Y%m%d)
+cp *.yaml talosconfig kubeconfig cluster-backup-$(date +%Y%m%d)/
+tar -czf cluster-backup-$(date +%Y%m%d).tar.gz cluster-backup-$(date +%Y%m%d)/
 ```
 
 ---
 
 ## Troubleshooting
-
-### VIP Not Responding
-
-```bash
-# Check which node has the VIP
-for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15; do
-  echo "Checking $node..."
-  talosctl --talosconfig talosconfig --nodes $node get links | grep vip
-done
-
-# Check etcd health
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 service etcd status
-```
 
 ### Nodes Not Ready
 
@@ -1192,189 +1351,214 @@ talosctl --talosconfig talosconfig --nodes 192.168.85.11 service etcd status
 # Check kubelet status
 talosctl --talosconfig talosconfig --nodes 192.168.85.21 service kubelet status
 
-# Check for CNI issues
+# Check CNI pods
 kubectl --kubeconfig=kubeconfig get pods -n calico-system
-kubectl --kubeconfig=kubeconfig logs -n calico-system -l k8s-app=calico-node
+kubectl --kubeconfig=kubeconfig logs -n calico-system -l k8s-app=calico-node --tail=50
+
+# Check node details
+kubectl --kubeconfig=kubeconfig describe node worker-01
+```
+
+### VIP Not Responding
+
+```bash
+# Check which node has VIP
+for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15; do
+  echo "Checking $node..."
+  talosctl --talosconfig talosconfig --nodes $node get links | grep -A 2 ens192
+done
+
+# Check etcd health
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 service etcd status
+
+# View cluster members
+talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
 ```
 
 ### Storage Issues
 
+#### Local Path Issues
+
 ```bash
-# Check Local Path Provisioner
-kubectl --kubeconfig=kubeconfig get pods -n local-path-storage
-kubectl --kubeconfig=kubeconfig logs -n local-path-storage -l app=local-path-provisioner
+# Check provisioner logs
+kubectl --kubeconfig=kubeconfig logs -n local-path-storage \
+  -l app=local-path-provisioner --tail=100
 
-# Check LINSTOR satellites
-kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore -l app.kubernetes.io/component=linstor-satellite
+# Check PVC events
+kubectl --kubeconfig=kubeconfig describe pvc <pvc-name>
+```
 
-# View LINSTOR errors
-kubectl --kubeconfig=kubeconfig logs -n piraeus-datastore $LINSTOR_POD
+#### LINSTOR Issues
+
+```bash
+# Check LINSTOR controller
+kubectl --kubeconfig=kubeconfig logs -n piraeus-datastore \
+  -l app.kubernetes.io/component=linstor-controller --tail=100
+
+# Check satellite pods
+kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore \
+  -l app.kubernetes.io/component=linstor-satellite
+
+# Check storage pools
+kubectl --kubeconfig=kubeconfig linstor storage-pool list
+
+# Check for errors
+kubectl --kubeconfig=kubeconfig linstor error-reports list
+
+# View specific resource
+kubectl --kubeconfig=kubeconfig linstor resource list
+kubectl --kubeconfig=kubeconfig linstor volume list
 ```
 
 ### MetalLB Not Assigning IPs
 
 ```bash
 # Check speaker pods
-kubectl --kubeconfig=kubeconfig get pods -n metallb-system -l component=speaker
+kubectl --kubeconfig=kubeconfig get pods -n metallb-system \
+  -l component=speaker
 
-# Check controller logs
-kubectl --kubeconfig=kubeconfig logs -n metallb-system -l component=controller
+# Check controller
+kubectl --kubeconfig=kubeconfig logs -n metallb-system \
+  -l component=controller --tail=100
 
 # Verify configuration
-kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system -o yaml
+kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement \
+  -n metallb-system -o yaml
 ```
 
-### VMware Tools Not Running
+### Metrics Server Issues
 
 ```bash
-# Check extension installation
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 get extensions
-
-# Check vmtoolsd service
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 service vmtoolsd status
+# Check metrics-server pod
+kubectl --kubeconfig=kubeconfig get pods -n kube-system \
+  -l k8s-app=metrics-server
 
 # View logs
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 logs vmtoolsd
+kubectl --kubeconfig=kubeconfig logs -n kube-system \
+  -l k8s-app=metrics-server --tail=100
+
+# Test metrics
+kubectl --kubeconfig=kubeconfig top nodes --v=10
+```
+
+### VMware Tools Issues
+
+```bash
+# Check if extension is loaded
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  get extensions
+
+# Check service status
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  service vmtoolsd status
+
+# View service logs
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
+  logs vmtoolsd
 ```
 
 ---
 
-## Backup Procedures
+## Summary
 
-### Backup etcd
+### What We Built
 
-```bash
-# Create etcd snapshot
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 etcd snapshot etcd-backup.db
+✅ **High Availability Control Plane**
+- 5 control plane nodes with shared VIP (192.168.85.10)
+- Automatic failover for Kubernetes API
+- etcd cluster for state management
 
-# Download the snapshot
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 cp /var/lib/etcd/etcd-backup.db ./etcd-backup-$(date +%Y%m%d).db
-```
+✅ **Worker Pool**
+- 5 dedicated worker nodes
+- Workloads isolated from control plane
 
-### Backup Talos Configuration
+✅ **Networking**
+- Calico v3.29.7 CNI with network policies
+- MetalLB v0.14.9 LoadBalancer (192.168.85.100-150)
+- Private registry mirrors configured
 
-```bash
-# Backup all configuration files
-mkdir -p backups/$(date +%Y%m%d)
-cp *.yaml talosconfig kubeconfig backups/$(date +%Y%m%d)/
-```
+✅ **Storage**
+- **local-path**: Fast local storage (default)
+- **linstor-lvm-r1**: No replication
+- **linstor-lvm-r2**: 2-way DRBD replication
+- **linstor-lvm-r3**: 3-way DRBD replication
 
-### Restore etcd from Backup
+✅ **Monitoring**
+- Metrics Server for resource monitoring
+- `kubectl top` commands functional
 
-```bash
-# Stop etcd on all control planes
-for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15; do
-  talosctl --talosconfig talosconfig --nodes $node service etcd stop
-done
+✅ **VMware Integration**
+- Factory image with VMware Tools
+- Guest agent for better vSphere integration
 
-# Upload backup to first control plane
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 cp ./etcd-backup.db /var/lib/etcd/
+✅ **Production Ready**
+- All components tested and verified
+- Backup procedures documented
+- Upgrade paths defined
+- Troubleshooting guides included
 
-# Restore and restart (consult Talos documentation for specific restore procedure)
-```
+### Key Files to Backup
 
----
-
-## Upgrading
-
-### Upgrade Kubernetes Version
-
-```bash
-# Upgrade control planes first
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 upgrade-k8s --to 1.33.8
-
-# Wait for completion, then upgrade workers
-for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
-  kubectl --kubeconfig=kubeconfig drain $node --ignore-daemonsets --delete-emptydir-data
-  talosctl --talosconfig talosconfig --nodes $node upgrade-k8s --to 1.33.8
-  kubectl --kubeconfig=kubeconfig uncordon $node
-done
-```
-
-### Upgrade Talos Linux
-
-```bash
-# Upgrade control planes one at a time
-talosctl --talosconfig talosconfig --nodes 192.168.85.11 upgrade \
-  --image ghcr.io/siderolabs/installer:v1.11.0
-# Wait for node to come back, then proceed to next
-
-# Upgrade workers
-for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
-  kubectl --kubeconfig=kubeconfig drain $node --ignore-daemonsets --delete-emptydir-data
-  talosctl --talosconfig talosconfig --nodes $node upgrade \
-    --image ghcr.io/siderolabs/installer:v1.11.0
-  kubectl --kubeconfig=kubeconfig uncordon $node
-done
-```
-
----
-
-## Final Notes
-
-### Important Files Generated
-
-Keep these files safe and backed up:
 - `talosconfig` - Talos authentication
-- `kubeconfig` - Kubernetes authentication
-- `cp-*.yaml` - Control plane configurations
-- `worker-*.yaml` - Worker configurations
+- `kubeconfig` - Kubernetes authentication  
+- `cp-*.yaml` - Control plane configs (5 files)
+- `worker-*.yaml` - Worker configs (5 files)
 - `cp-patch.yaml` - Control plane patch template
 - `worker-patch.yaml` - Worker patch template
 
-### Network Requirements Summary
+### Network Summary
 
-| Purpose | Address/Range | Notes |
-|---------|---------------|-------|
-| Gateway | 192.168.85.1 | Network gateway |
-| VIP | 192.168.85.10 | Kubernetes API HA endpoint |
-| Control Planes | 192.168.85.11-15 | 5 nodes |
-| Workers | 192.168.85.21-25 | 5 nodes |
-| LoadBalancer Pool | 192.168.85.100-150 | 51 IPs for services |
+| Purpose | Address/Range |
+|---------|---------------|
+| Gateway | 192.168.85.1 |
+| VIP | 192.168.85.10 |
+| Control Planes | 192.168.85.11-15 |
+| Workers | 192.168.85.21-25 |
+| LoadBalancer Pool | 192.168.85.100-150 |
 
 ### Storage Summary
 
-| Storage Class | Type | Replication | Use Case |
-|---------------|------|-------------|----------|
-| local-path | Local | None | Fast, non-critical data |
-| linstor-lvm-r2 | Distributed | 2-way | Important data, HA |
-| linstor-lvm-r3 | Distributed | 3-way | Critical data, maximum HA |
-
-### Resource Allocation
-
-**Control Planes (each):**
-- 2+ vCPU
-- 4GB+ RAM
-- 50GB+ disk
-
-**Workers (each):**
-- 4+ vCPU
-- 8GB+ RAM
-- 50GB+ OS disk
-- 100GB+ `/dev/sdb` for LINSTOR
+| Storage Class | Replication | Use Case |
+|---------------|-------------|----------|
+| local-path | None | Fast, non-critical data |
+| linstor-lvm-r1 | None | Fast LINSTOR storage |
+| linstor-lvm-r2 | 2-way | Important data, HA |
+| linstor-lvm-r3 | 3-way | Critical data, maximum HA |
 
 ---
 
-## Success Checklist
+## Quick Reference Commands
 
-- [ ] All 10 nodes showing `Ready` status
-- [ ] VIP `192.168.85.10` responding and failing over correctly
-- [ ] Calico pods running in `calico-system` namespace
-- [ ] MetalLB assigning IPs from pool
-- [ ] Local Path storage class available and set as default
-- [ ] LINSTOR storage classes available and functional
-- [ ] VMware Tools running on all nodes
-- [ ] Test PVCs created and bound successfully
-- [ ] Test LoadBalancer service assigned external IP
-- [ ] All configurations backed up
+```bash
+# Cluster status
+kubectl --kubeconfig=kubeconfig get nodes
+kubectl --kubeconfig=kubeconfig get pods -A
+kubectl --kubeconfig=kubeconfig top nodes
+
+# Storage management
+kubectl --kubeconfig=kubeconfig get storageclass
+kubectl --kubeconfig=kubeconfig linstor storage-pool list
+kubectl --kubeconfig=kubeconfig linstor resource list
+
+# Service management
+kubectl --kubeconfig=kubeconfig get svc -A
+
+# Talos management
+talosctl --talosconfig talosconfig --nodes 192.168.85.10 health
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 dashboard
+talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
+
+# Maintenance
+kubectl --kubeconfig=kubeconfig drain <node> --ignore-daemonsets --delete-emptydir-data
+kubectl --kubeconfig=kubeconfig uncordon <node>
+```
 
 ---
 
-**Cluster is now fully operational and production-ready!**
+**Cluster is production-ready!**
 
-For additional support and documentation:
-- Talos Linux: https://www.talos.dev/
-- Kubernetes: https://kubernetes.io/docs/
-- Calico: https://docs.tigera.io/calico/latest/
-- MetalLB: https://metallb.universe.tf/
-- LINSTOR: https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/
+For support:
+- **Talos**: https://www.talos.dev/
+- **LINSTOR**: https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/
+- **Kubernetes**: https://kubernetes.io/docs/
+- **kubectl-linstor**: https://github.com/piraeusdatastore/kubectl-linstor
