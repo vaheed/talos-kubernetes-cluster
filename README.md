@@ -72,7 +72,7 @@ mv talosctl-darwin-amd64 /usr/local/bin/talosctl
 ## Generate Cluster Configuration
 
 ```bash
-talosctl gen config "talos-cluster" "https://cp.talos.virakcloud.net:6443"   --kubernetes-version v1.33.6
+talosctl gen config "talos-cluster" "https://cp.talos.vaheed.net:6443"   --kubernetes-version v1.33.6
 ```
 
 Files created:
@@ -94,7 +94,7 @@ machine:
 
     extraHostEntries:
       - ip: 192.168.75.200
-        aliases: ["cp.talos.virakcloud.net"]
+        aliases: ["cp.talos.vaheed.net"]
       - ip: 192.168.75.191
         aliases: ["cp01"]
       - ip: 192.168.75.192
@@ -123,7 +123,7 @@ machine:
 
   certSANs:
     - 192.168.75.200
-    - cp.talos.virakcloud.net
+    - cp.talos.vaheed.net
     - 192.168.75.191
     - 192.168.75.192
     - 192.168.75.193
@@ -144,7 +144,7 @@ machine:
   network:
     extraHostEntries:
       - ip: 192.168.75.200
-        aliases: ["cp.talos.virakcloud.net"]
+        aliases: ["cp.talos.vaheed.net"]
       - ip: 192.168.75.191
         aliases: ["cp01"]
       - ip: 192.168.75.192
@@ -314,6 +314,3 @@ kubectl --kubeconfig=kubeconfig label namespace default   pod-security.kubernete
 - Default storage class
 - Private registry mirrors
 - Fully reproducible setup
-
-This file is intentionally boring.
-Boring clusters stay alive.
