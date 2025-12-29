@@ -872,6 +872,16 @@ kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
 
 ### Create Ceph Cluster
 
+first get workers name:
+```bash
+talosctl --talosconfig talosconfig \
+  --endpoints 192.168.85.10 \
+  --nodes 192.168.85.10 \
+  get members
+```
+
+after that changes workers name in config
+
 Create `ceph-cluster.yaml`:
 
 ```yaml
@@ -1137,13 +1147,15 @@ metadata:
     rook_cluster: rook-ceph
 spec:
   ports:
-    - name: dashboard
-      port: 8443
-      protocol: TCP
-      targetPort: 8443
+  - name: dashboard
+    port: 7000
+    protocol: TCP
+    targetPort: 7000
   selector:
     app: rook-ceph-mgr
     rook_cluster: rook-ceph
+    mgr_role: active
+  sessionAffinity: None
   type: LoadBalancer
 EOF
 
