@@ -31,7 +31,7 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 12. [Install MetalLB](#install-metallb)
 13. [Install Metrics Server](#install-metrics-server)
 14. [Install Local Path Storage](#install-local-path-storage)
-15. [Install GlusterFS Storage](#install-GlusterFS-storage)
+15. [Install Ceph Storage](#install-Ceph-storage)
 16. [Configure Pod Security](#configure-pod-security)
 17. [Verification](#verification)
 18. [Operations](#operations)
@@ -102,7 +102,7 @@ graph TD
     subgraph "Services"
         LB[MetalLB<br/>192.168.85.100-150]
         STOR1[Local Path<br/>Default SC]
-        STOR2[GlusterFS<br/>Replicated SC]
+        STOR2[Ceph<br/>Replicated SC]
         MON[Metrics Server]
     end
     
@@ -141,7 +141,7 @@ graph TD
 - 4+ vCPU cores
 - 8GB+ RAM
 - 50GB+ OS disk (boot disk)
-- 100GB+ `/dev/sdb` for GlusterFS storage
+- 100GB+ `/dev/sdb` for Ceph storage
 - Network interface: ens192
 
 ### Software Requirements
@@ -382,14 +382,6 @@ machine:
     nodeIP:
       validSubnets:
         - 192.168.85.0/24
-    extraMounts:
-      - destination: /var/lib/GlusterFS
-        type: bind
-        source: /var/lib/GlusterFS
-        options:
-          - bind
-          - rshared
-          - rw
 
 cluster:
   network:
@@ -399,7 +391,7 @@ cluster:
 **Key configurations:**
 - **Host entries**: Same as control planes
 - **Registry mirrors**: Same as control planes
-- **GlusterFS mount**: Required for CSI driver
+- **Ceph mount**: Required for CSI driver
 - **No VIP**: Workers don't participate in VIP
 
 ---
@@ -851,9 +843,6 @@ kubectl --kubeconfig=kubeconfig get storageclass
 echo -e "\n4. MetalLB Configuration:"
 kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system
 
-echo -e "\n5. GlusterFS Storage Pools:"
-kubectl --kubeconfig=kubeconfig GlusterFS storage-pool list
-
 echo -e "\n6. Node Resource Usage:"
 kubectl --kubeconfig=kubeconfig top nodes
 
@@ -1164,12 +1153,6 @@ talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
 - MetalLB v0.14.9 LoadBalancer (192.168.85.100-150)
 - Private registry mirrors configured
 
-✅ **Storage**
-- **local-path**: Fast local storage (default)
-- **GlusterFS-lvm-r1**: No replication
-- **GlusterFS-lvm-r2**: 2-way DRBD replication
-- **GlusterFS-lvm-r3**: 3-way DRBD replication
-
 ✅ **Monitoring**
 - Metrics Server for resource monitoring
 - `kubectl top` commands functional
@@ -1235,5 +1218,4 @@ kubectl --kubeconfig=kubeconfig uncordon <node>
 
 For support:
 - **Talos**: https://www.talos.dev/
-- **GlusterFS**: https://linbit.com/drbd-user-guide/GlusterFS-guide-1_0-en/
 - **Kubernetes**: https://kubernetes.io/docs/
