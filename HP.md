@@ -382,6 +382,16 @@ machine:
     nodeIP:
       validSubnets:
         - 192.168.85.0/24
+    extraMounts:
+      - destination: /var/lib/rook
+        type: bind
+        source: /var/lib/rook
+        options:
+          - bind
+          - rshared
+          - rw
+  sysctls:
+    vm.max_map_count: "262144"
 
 cluster:
   network:
@@ -823,6 +833,778 @@ kubectl --kubeconfig=kubeconfig label namespace default \
 ```
 
 ---
+
+### Install Rook Operator
+
+```bash
+echo "Installing Rook-Ceph operator..."
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/crds.yaml
+
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/common.yaml
+
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/operator.yaml
+```
+
+### Wait for Operator
+
+```bash
+echo "Waiting for Rook operator to be ready..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=rook-ceph-operator \
+  -n rook-ceph \
+  --timeout=600s
+```
+
+### Create Ceph Cluster
+
+Create `ceph-cluster.yaml`:
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  cephVersion:
+    image: quay.io/ceph/ceph:v18.2.4
+    allowUnsupported: false
+  dataDirHostPath: /var/lib/rook
+  skipUpgradeChecks: false
+  continueUpgradeAfterChecksEvenIfNotHealthy: false
+  waitTimeoutForHealthyOSDInMinutes: 10
+  mon:
+    count: 3
+    allowMultiplePerNode: false
+  mgr:
+    count: 2
+    allowMultiplePerNode: false
+    modules:
+      - name: pg_autoscaler
+        enabled: true
+      - name: rook
+        enabled: true
+  dashboard:
+    enabled: true
+    ssl: false
+  monitoring:
+    enabled: false
+  network:
+    connections:
+      encryption:
+        enabled: false
+      compression:
+        enabled: false
+  crashCollector:
+    disable: false
+  logCollector:
+    enabled: true
+    periodicity: daily
+    maxLogSize: 500M
+  cleanupPolicy:
+    confirmation: ""
+    sanitizeDisks:
+      method: quick
+      dataSource: zero
+      iteration: 1
+    allowUninstallWithVolumes: false
+  resources:
+    mgr:
+      limits:
+        memory: "1Gi"
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+    mon:
+      limits:
+        memory: "2Gi"
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+    osd:
+      limits:
+        memory: "4Gi"
+      requests:
+        cpu: "1000m"
+        memory: "2Gi"
+    prepareosd:
+      requests:
+        cpu: "500m"
+        memory: "50Mi"
+  storage:
+    useAllNodes: false
+    useAllDevices: false
+    nodes:
+      - name: "worker-01"
+        devices:
+          - name: "sdb"
+      - name: "worker-02"
+        devices:
+          - name: "sdb"
+      - name: "worker-03"
+        devices:
+          - name: "sdb"
+      - name: "worker-04"
+        devices:
+          - name: "sdb"
+      - name: "worker-05"
+        devices:
+          - name: "sdb"
+  disruptionManagement:
+    managePodBudgets: true
+    osdMaintenanceTimeout: 30
+    pgHealthCheckTimeout: 0
+  healthCheck:
+    daemonHealth:
+      mon:
+        interval: 45s
+      osd:
+        interval: 60s
+      status:
+        interval: 60s
+    livenessProbe:
+      mon:
+        disabled: false
+      mgr:
+        disabled: false
+      osd:
+        disabled: false
+```
+
+Apply the cluster configuration:
+
+```bash
+echo "Creating Ceph cluster..."
+kubectl --kubeconfig=kubeconfig apply -f ceph-cluster.yaml
+```
+
+### Wait for Ceph Cluster
+
+This will take 5-10 minutes:
+
+```bash
+echo "Waiting for Ceph cluster to be ready (this may take 10 minutes)..."
+sleep 300
+
+echo "Checking Ceph cluster status..."
+kubectl --kubeconfig=kubeconfig get pods -n rook-ceph
+
+echo "Waiting for OSDs to be ready..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=rook-ceph-osd \
+  -n rook-ceph \
+  --timeout=600s
+```
+
+### Create Block Storage Pool
+
+Create `ceph-blockpool.yaml`:
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool
+  namespace: rook-ceph
+spec:
+  failureDomain: host
+  replicated:
+    size: 3
+    requireSafeReplicaSize: true
+  deviceClass: ""
+  compressionMode: none
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-ceph-block
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  pool: replicapool
+  imageFormat: "2"
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+  csi.storage.k8s.io/fstype: ext4
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+```
+
+Apply the block pool:
+
+```bash
+echo "Creating Ceph block pool and storage class..."
+kubectl --kubeconfig=kubeconfig apply -f ceph-blockpool.yaml
+
+sleep 30
+```
+
+### Create Filesystem Storage (Optional)
+
+Create `ceph-filesystem.yaml`:
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: ceph-filesystem
+  namespace: rook-ceph
+spec:
+  metadataPool:
+    replicated:
+      size: 3
+      requireSafeReplicaSize: true
+  dataPools:
+    - name: replicated
+      failureDomain: host
+      replicated:
+        size: 3
+        requireSafeReplicaSize: true
+  metadataServer:
+    activeCount: 1
+    activeStandby: true
+    resources:
+      limits:
+        memory: "4Gi"
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-cephfs
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  fsName: ceph-filesystem
+  pool: ceph-filesystem-replicated
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+```
+
+Apply the filesystem:
+
+```bash
+echo "Creating CephFS filesystem and storage class..."
+kubectl --kubeconfig=kubeconfig apply -f ceph-filesystem.yaml
+
+echo "Waiting for MDS pods..."
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=rook-ceph-mds \
+  -n rook-ceph \
+  --timeout=300s
+```
+
+### Enable Ceph Dashboard (Optional)
+
+```bash
+echo "Exposing Ceph dashboard via LoadBalancer..."
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-mgr-dashboard-external
+  namespace: rook-ceph
+  labels:
+    app: rook-ceph-mgr
+    rook_cluster: rook-ceph
+spec:
+  ports:
+    - name: dashboard
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    app: rook-ceph-mgr
+    rook_cluster: rook-ceph
+  type: LoadBalancer
+EOF
+
+sleep 15
+echo "Dashboard will be available at:"
+kubectl --kubeconfig=kubeconfig get svc -n rook-ceph rook-ceph-mgr-dashboard-external
+```
+
+Get dashboard credentials:
+
+```bash
+echo "Ceph Dashboard Credentials:"
+echo "Username: admin"
+echo -n "Password: "
+kubectl --kubeconfig=kubeconfig -n rook-ceph get secret rook-ceph-dashboard-password \
+  -o jsonpath="{['data']['password']}" | base64 --decode
+echo ""
+```
+
+### Verify Ceph Installation
+
+```bash
+echo "=== CEPH VERIFICATION ==="
+
+echo -e "\n1. Ceph Pods:"
+kubectl --kubeconfig=kubeconfig get pods -n rook-ceph
+
+echo -e "\n2. Storage Classes:"
+kubectl --kubeconfig=kubeconfig get storageclass
+
+echo -e "\n3. Ceph Cluster Status:"
+kubectl --kubeconfig=kubeconfig get cephcluster -n rook-ceph
+
+echo -e "\n4. Ceph Health:"
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph status
+
+echo -e "\n5. OSD Status:"
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph osd status
+
+echo -e "\n6. Storage Pool:"
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph osd pool ls detail
+```
+
+### Install Ceph Tools (Troubleshooting)
+
+```bash
+echo "Installing Ceph toolbox for troubleshooting..."
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/toolbox.yaml
+
+kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
+  -l app=rook-ceph-tools \
+  -n rook-ceph \
+  --timeout=300s
+```
+
+### Test Ceph Block Storage
+
+```bash
+echo "Testing Ceph block storage..."
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-ceph-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: rook-ceph-block
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-ceph-pod
+spec:
+  containers:
+    - name: test
+      image: nginx
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-ceph-pvc
+EOF
+
+sleep 30
+kubectl --kubeconfig=kubeconfig get pvc test-ceph-pvc
+kubectl --kubeconfig=kubeconfig get pod test-ceph-pod
+```
+
+Verify data persistence:
+
+```bash
+echo "Writing test data..."
+kubectl --kubeconfig=kubeconfig exec test-ceph-pod -- sh -c "echo 'Ceph test data' > /data/test.txt"
+
+echo "Reading test data..."
+kubectl --kubeconfig=kubeconfig exec test-ceph-pod -- cat /data/test.txt
+
+echo "Deleting test pod..."
+kubectl --kubeconfig=kubeconfig delete pod test-ceph-pod
+
+echo "Recreating pod with same PVC..."
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-ceph-pod-2
+spec:
+  containers:
+    - name: test
+      image: nginx
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-ceph-pvc
+EOF
+
+sleep 30
+echo "Verifying data persisted:"
+kubectl --kubeconfig=kubeconfig exec test-ceph-pod-2 -- cat /data/test.txt
+```
+
+### Test CephFS Storage (if installed)
+
+```bash
+echo "Testing CephFS storage..."
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-cephfs-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: rook-cephfs
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-cephfs-pod-1
+spec:
+  containers:
+    - name: test
+      image: nginx
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-cephfs-pvc
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-cephfs-pod-2
+spec:
+  containers:
+    - name: test
+      image: nginx
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: test-cephfs-pvc
+EOF
+
+sleep 45
+echo "Testing ReadWriteMany access..."
+kubectl --kubeconfig=kubeconfig exec test-cephfs-pod-1 -- sh -c "echo 'Written from pod 1' > /data/shared.txt"
+kubectl --kubeconfig=kubeconfig exec test-cephfs-pod-2 -- cat /data/shared.txt
+```
+
+### Storage Class Summary
+
+Your cluster now has three storage classes:
+
+| Storage Class | Type | Access Modes | Use Case | Default |
+|--------------|------|--------------|----------|---------|
+| local-path | Local | RWO | Fast local storage, node-specific | ✓ Yes |
+| rook-ceph-block | Ceph RBD | RWO | Replicated block storage, persistent | ✗ No |
+| rook-cephfs | CephFS | RWO, RWX | Shared filesystem storage | ✗ No |
+
+**Access Modes:**
+- **RWO**: ReadWriteOnce - Single node mount
+- **RWX**: ReadWriteMany - Multiple node mount
+
+### Change Default Storage Class (Optional)
+
+To make Ceph block the default:
+
+```bash
+# Remove default from local-path
+kubectl --kubeconfig=kubeconfig patch storageclass local-path \
+  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}'
+
+# Set rook-ceph-block as default
+kubectl --kubeconfig=kubeconfig patch storageclass rook-ceph-block \
+  -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+```
+
+### Cleanup Test Resources
+
+```bash
+echo "Cleaning up test resources..."
+kubectl --kubeconfig=kubeconfig delete pod test-ceph-pod-2 --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete pod test-cephfs-pod-1 test-cephfs-pod-2 --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete pvc test-ceph-pvc test-cephfs-pvc --ignore-not-found
+```
+
+---
+
+## Ceph Operations
+
+### Monitor Cluster Health
+
+```bash
+# Quick status
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph -s
+
+# Detailed health
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph health detail
+
+# OSD tree
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph osd tree
+
+# Pool status
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph df
+```
+
+### View Storage Usage
+
+```bash
+# Overall cluster usage
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph df
+
+# Per-pool usage
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- rados df
+
+# PVC usage
+kubectl --kubeconfig=kubeconfig get pvc -A
+```
+
+### Scale OSDs
+
+To add more storage, add additional disks to workers and update the CephCluster:
+
+```bash
+# Edit cluster configuration
+kubectl --kubeconfig=kubeconfig edit cephcluster -n rook-ceph
+
+# Add new device under storage.nodes[].devices:
+#   - name: "sdc"
+```
+
+### Remove OSD
+
+```bash
+# Mark OSD out
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd out osd.<id>
+
+# Remove from cluster
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd purge osd.<id> --yes-i-really-mean-it
+```
+
+### Backup Ceph Configuration
+
+```bash
+# Export cluster spec
+kubectl --kubeconfig=kubeconfig get cephcluster -n rook-ceph rook-ceph -o yaml > ceph-cluster-backup.yaml
+
+# Export pools
+kubectl --kubeconfig=kubeconfig get cephblockpool -n rook-ceph -o yaml > ceph-pools-backup.yaml
+
+# Export storage classes
+kubectl --kubeconfig=kubeconfig get storageclass rook-ceph-block rook-cephfs -o yaml > ceph-sc-backup.yaml
+```
+
+---
+
+## Ceph Troubleshooting
+
+### OSDs Not Starting
+
+```bash
+# Check OSD pod logs
+kubectl --kubeconfig=kubeconfig logs -n rook-ceph -l app=rook-ceph-osd --tail=100
+
+# Check if disk is clean
+talosctl --talosconfig talosconfig --nodes 192.168.85.21 disks
+
+# Verify disk has no partitions
+talosctl --talosconfig talosconfig --nodes 192.168.85.21 \
+  read /sys/block/sdb/size
+```
+
+### Ceph Health Warnings
+
+```bash
+# Get detailed warning info
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph health detail
+
+# Check MON quorum
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph mon stat
+
+# Check placement groups
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph pg stat
+```
+
+### PVC Stuck in Pending
+
+```bash
+# Check PVC events
+kubectl --kubeconfig=kubeconfig describe pvc <pvc-name>
+
+# Check CSI provisioner logs
+kubectl --kubeconfig=kubeconfig logs -n rook-ceph \
+  -l app=csi-rbdplugin-provisioner --tail=100
+
+# Check node plugin
+kubectl --kubeconfig=kubeconfig logs -n rook-ceph \
+  -l app=csi-rbdplugin --tail=100
+```
+
+### Slow Operations
+
+```bash
+# Check for slow ops
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph -s | grep -i slow
+
+# Check OSD performance
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd perf
+
+# Check network latency between nodes
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd ping <osd-id>
+```
+
+### Recovery Operations
+
+```bash
+# Check recovery status
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph -s | grep -i recovery
+
+# Adjust recovery speed (if needed)
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph tell osd.* injectargs --osd-max-backfills=1
+
+# Monitor recovery progress
+watch kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph -s
+```
+
+### Complete Ceph Cleanup (Destructive)
+
+**WARNING: This will delete ALL Ceph data!**
+
+```bash
+# Delete all PVCs using Ceph first
+kubectl --kubeconfig=kubeconfig delete pvc --all -A
+
+# Delete Ceph cluster
+kubectl --kubeconfig=kubeconfig delete -f ceph-filesystem.yaml
+kubectl --kubeconfig=kubeconfig delete -f ceph-blockpool.yaml
+kubectl --kubeconfig=kubeconfig delete -f ceph-cluster.yaml
+
+# Delete operator
+kubectl --kubeconfig=kubeconfig delete -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/operator.yaml
+kubectl --kubeconfig=kubeconfig delete -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/common.yaml
+kubectl --kubeconfig=kubeconfig delete -f \
+  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/crds.yaml
+
+# Cleanup data on each worker (destructive!)
+for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
+  echo "Cleaning Ceph data on $node..."
+  talosctl --talosconfig talosconfig --nodes $node reset --graceful=false --reboot \
+    --system-labels-to-wipe STATE --system-labels-to-wipe EPHEMERAL
+done
+```
+
+---
+
+## Ceph Best Practices
+
+### Performance Optimization
+
+**For databases and high-IOPS workloads:**
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: database-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: rook-ceph-block
+  resources:
+    requests:
+      storage: 50Gi
+```
+
+**For shared files and low-IOPS workloads:**
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-files-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: rook-cephfs
+  resources:
+    requests:
+      storage: 100Gi
+```
+
+### Capacity Planning
+
+Monitor available capacity:
+
+```bash
+# Check cluster capacity
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph df
+
+# Recommended: Keep usage below 80%
+# Alert at 75% usage
+# Add capacity at 70% usage
+```
+
+### Backup Strategy
+
+Ceph provides replication (3 copies by default), but this is NOT a backup:
+
+**Application-level backups:**
+- Use Velero for cluster backups
+- Application-specific backup tools
+- Regular snapshots to external storage
+
+**RBD snapshots:**
+
+```bash
+# Create snapshot
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/r
+
+
+
+---
+
 
 ## Verification
 
