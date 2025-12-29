@@ -655,14 +655,14 @@ Nodes will be `NotReady` until CNI is installed.
 
 ## Install Calico CNI
 
-Install Calico v3.29.7 for pod networking.
+Install Calico v3.30.5 for pod networking.
 
 ### Install Tigera Operator
 
 ```bash
 echo "Installing Calico Tigera Operator..."
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/projectcalico/calico/v3.29.7/manifests/tigera-operator.yaml
+  https://raw.githubusercontent.com/projectcalico/calico/v3.30.5/manifests/tigera-operator.yaml
 ```
 
 ### Install Calico Custom Resources
@@ -670,7 +670,7 @@ kubectl --kubeconfig=kubeconfig apply -f \
 ```bash
 echo "Installing Calico custom resources..."
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/projectcalico/calico/v3.29.7/manifests/custom-resources.yaml
+  https://raw.githubusercontent.com/projectcalico/calico/v3.30.5/manifests/custom-resources.yaml
 ```
 
 ### Wait for Calico
@@ -726,7 +726,7 @@ metadata:
   namespace: metallb-system
 spec:
   addresses:
-    - 192.168.85.100-192.168.85.150
+    - 192.168.85.101-192.168.85.199
 ---
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
@@ -839,13 +839,13 @@ kubectl --kubeconfig=kubeconfig label namespace default \
 ```bash
 echo "Installing Rook-Ceph operator..."
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/crds.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/crds.yaml
 
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/common.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/common.yaml
 
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/operator.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/operator.yaml
 ```
 
 ### Wait for Operator
@@ -1993,6 +1993,22 @@ talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
 kubectl --kubeconfig=kubeconfig drain <node> --ignore-daemonsets --delete-emptydir-data
 kubectl --kubeconfig=kubeconfig uncordon <node>
 ```
+
+---
+
+
+**Remove Cluster !!!**
+
+
+for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15 192.168.85.21 192.168.85.22 192.168.85.23; do
+  echo "Wiping disks on $node..."
+  talosctl --talosconfig talosconfig wipe disk sda -n $node -e $node 
+  talosctl --talosconfig talosconfig wipe disk sdb -n $node -e $node
+
+  echo "Resetting $node..."
+  talosctl --talosconfig talosconfig reset -n $node -e $node --graceful=false --reboot
+done
+
 
 ---
 
