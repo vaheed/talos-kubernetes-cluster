@@ -848,6 +848,18 @@ kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/operator.yaml
 ```
 
+
+## Configure Pod Security 
+
+Enable privileged pods in rook-ceph namespace:
+
+```bash
+echo "Configuring pod security..."
+kubectl --kubeconfig=kubeconfig label namespace rook-ceph \
+  pod-security.kubernetes.io/enforce=privileged \
+  --overwrite
+```
+  
 ### Wait for Operator
 
 ```bash
