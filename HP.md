@@ -4,14 +4,13 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 
 **Specifications:**
 - **Network**: `192.168.85.0/24`
-- **Talos**: v1.10.9 with VMware Tools (Factory Image)
+- **Talos**: v1.11.6 with VMware Tools (Factory Image)
 - **Kubernetes**: v1.33.7
 - **5 Control Planes** with VIP failover
 - **5 Worker Nodes** with `/dev/sdb` for distributed storage
 - **Calico**: v3.29.7 CNI
 - **MetalLB**: v0.14.9 LoadBalancer
 - **Local Path Provisioner**: v0.0.33
-- **LINSTOR**: Distributed replicated storage
 - **Metrics Server**: For resource monitoring
 
 ---
@@ -32,7 +31,7 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 12. [Install MetalLB](#install-metallb)
 13. [Install Metrics Server](#install-metrics-server)
 14. [Install Local Path Storage](#install-local-path-storage)
-15. [Install LINSTOR Storage](#install-linstor-storage)
+15. [Install GlusterFS Storage](#install-GlusterFS-storage)
 16. [Configure Pod Security](#configure-pod-security)
 17. [Verification](#verification)
 18. [Operations](#operations)
@@ -103,7 +102,7 @@ graph TD
     subgraph "Services"
         LB[MetalLB<br/>192.168.85.100-150]
         STOR1[Local Path<br/>Default SC]
-        STOR2[LINSTOR<br/>Replicated SC]
+        STOR2[GlusterFS<br/>Replicated SC]
         MON[Metrics Server]
     end
     
@@ -142,7 +141,7 @@ graph TD
 - 4+ vCPU cores
 - 8GB+ RAM
 - 50GB+ OS disk (boot disk)
-- 100GB+ `/dev/sdb` for LINSTOR storage
+- 100GB+ `/dev/sdb` for GlusterFS storage
 - Network interface: ens192
 
 ### Software Requirements
@@ -180,8 +179,8 @@ Your custom Talos image with VMware Tools has been generated:
 
 ```bash
 # Download the ISO with VMware Tools included
-wget https://factory.talos.dev/image/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40/v1.10.9/metal-amd64.iso \
-  -O talos-vmware-1.10.9.iso
+wget https://factory.talos.dev/image/646d0c889d8b4a1138bef71dc201edd852a1fac0c6e1e11c1ff2ed3b32bc3f44/v1.11.6/vmware-amd64.iso \
+  -O talos-vmware-1.11.6.iso
 ```
 
 ### Install on All Nodes
@@ -211,17 +210,17 @@ Download and install the Talos CLI tool:
 
 ```bash
 # For macOS (Apple Silicon)
-wget https://github.com/siderolabs/talos/releases/download/v1.10.9/talosctl-darwin-arm64
+wget https://github.com/siderolabs/talos/releases/download/v1.11.6/talosctl-darwin-arm64
 chmod +x talosctl-darwin-arm64
 sudo mv talosctl-darwin-arm64 /usr/local/bin/talosctl
 
 # For macOS (Intel)
-wget https://github.com/siderolabs/talos/releases/download/v1.10.9/talosctl-darwin-amd64
+wget https://github.com/siderolabs/talos/releases/download/v1.11.6/talosctl-darwin-amd64
 chmod +x talosctl-darwin-amd64
 sudo mv talosctl-darwin-amd64 /usr/local/bin/talosctl
 
 # For Linux
-wget https://github.com/siderolabs/talos/releases/download/v1.10.9/talosctl-linux-amd64
+wget https://github.com/siderolabs/talos/releases/download/v1.11.6/talosctl-linux-amd64
 chmod +x talosctl-linux-amd64
 sudo mv talosctl-linux-amd64 /usr/local/bin/talosctl
 
@@ -239,7 +238,7 @@ Create the initial cluster configuration:
 # Generate base configs
 talosctl gen config "talos-cluster" "https://vip.talos.vaheed.net:6443" \
   --kubernetes-version v1.33.7 \
-  --install-image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.10.9
+  --install-image factory.talos.dev/installer/646d0c889d8b4a1138bef71dc201edd852a1fac0c6e1e11c1ff2ed3b32bc3f44:v1.11.6
 ```
 
 **Files created:**
@@ -384,9 +383,9 @@ machine:
       validSubnets:
         - 192.168.85.0/24
     extraMounts:
-      - destination: /var/lib/linstor
+      - destination: /var/lib/GlusterFS
         type: bind
-        source: /var/lib/linstor
+        source: /var/lib/GlusterFS
         options:
           - bind
           - rshared
@@ -400,7 +399,7 @@ cluster:
 **Key configurations:**
 - **Host entries**: Same as control planes
 - **Registry mirrors**: Same as control planes
-- **LINSTOR mount**: Required for CSI driver
+- **GlusterFS mount**: Required for CSI driver
 - **No VIP**: Workers don't participate in VIP
 
 ---
@@ -820,267 +819,6 @@ kubectl --kubeconfig=kubeconfig get storageclass
 
 ---
 
-## Install LINSTOR Storage
-
-Install LINSTOR for distributed, replicated block storage using `/dev/sdb` on workers.
-
-### Prerequisites
-
-Verify `/dev/sdb` exists on all workers:
-
-```bash
-echo "Verifying /dev/sdb on workers..."
-for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
-  echo "Checking $node..."
-  talosctl --talosconfig talosconfig --nodes $node list /dev/ | grep sdb
-done
-```
-
-### Install kubectl-linstor Plugin
-
-Install the kubectl-linstor plugin to manage LINSTOR:
-
-```bash
-# For Linux/macOS
-curl -fsSL https://github.com/piraeusdatastore/kubectl-linstor/releases/latest/download/kubectl-linstor-linux-amd64 -o kubectl-linstor
-chmod +x kubectl-linstor
-sudo mv kubectl-linstor /usr/local/bin/
-
-# Verify installation
-kubectl linstor version
-```
-
-### Install LINSTOR Operator
-
-```bash
-echo "Installing LINSTOR operator..."
-kubectl --kubeconfig=kubeconfig apply --server-side -k "https://github.com/piraeusdatastore/piraeus-operator//config/default?ref=v2"
-```
-
-### Wait for Operator
-
-```bash
-echo "Waiting for LINSTOR operator..."
-kubectl --kubeconfig=kubeconfig wait pod --timeout=300s --for=condition=Ready \
-  -n piraeus-datastore \
-  -l app.kubernetes.io/component=piraeus-operator
-```
-
-### Prepare Storage on Workers
-
-Create LVM volume groups on `/dev/sdb` for all workers:
-
-```bash
-echo "Preparing LVM storage on workers..."
-kubectl --kubeconfig=kubeconfig apply -f - <<'EOF'
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: lvm-prepare-script
-  namespace: kube-system
-data:
-  prepare.sh: |
-    #!/bin/sh
-    set -e
-    
-    # Check if /dev/sdb exists
-    if [ ! -b "/dev/sdb" ]; then
-      echo "ERROR: /dev/sdb not found"
-      exit 1
-    fi
-    
-    # Check if VG already exists
-    if vgs linstor_vg >/dev/null 2>&1; then
-      echo "Volume group linstor_vg already exists"
-      vgs linstor_vg
-      exit 0
-    fi
-    
-    # Create physical volume and volume group
-    echo "Creating PV on /dev/sdb..."
-    pvcreate /dev/sdb
-    
-    echo "Creating VG linstor_vg..."
-    vgcreate linstor_vg /dev/sdb
-    
-    echo "LVM setup complete"
-    vgs linstor_vg
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: lvm-prepare
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      app: lvm-prepare
-  template:
-    metadata:
-      labels:
-        app: lvm-prepare
-    spec:
-      nodeSelector:
-        node-role.kubernetes.io/worker: ""
-      hostNetwork: true
-      hostPID: true
-      initContainers:
-      - name: lvm-setup
-        image: alpine:3.19
-        command:
-        - sh
-        - /scripts/prepare.sh
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: dev
-          mountPath: /dev
-        - name: scripts
-          mountPath: /scripts
-      containers:
-      - name: sleep
-        image: alpine:3.19
-        command: ["sh", "-c", "echo 'LVM setup complete'; sleep infinity"]
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            cpu: 50m
-            memory: 64Mi
-      volumes:
-      - name: dev
-        hostPath:
-          path: /dev
-      - name: scripts
-        configMap:
-          name: lvm-prepare-script
-          defaultMode: 0755
-EOF
-```
-
-Wait for LVM preparation:
-
-```bash
-echo "Waiting for LVM preparation to complete..."
-kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
-  -l app=lvm-prepare \
-  -n kube-system \
-  --timeout=300s
-
-echo "Checking LVM setup on workers..."
-kubectl --kubeconfig=kubeconfig logs -n kube-system -l app=lvm-prepare --tail=20
-```
-
-### Create LINSTOR Cluster
-
-```bash
-echo "Creating LINSTOR cluster..."
-kubectl --kubeconfig=kubeconfig apply -f - <<'EOF'
-apiVersion: piraeus.io/v1
-kind: LinstorCluster
-metadata:
-  name: linstor
-spec:
-  repository: quay.io/piraeusdatastore
-  
-  linstorController:
-    enabled: true
-    replicas: 1
-    
-  linstorSatelliteSet:
-    enabled: true
-    automaticStorageType: None
-    storagePools:
-      lvmPools:
-      - name: lvm-thin
-        volumeGroup: linstor_vg
-  
-  linstorCSIDriver:
-    enabled: true
-    nodeAffinity:
-      nodeSelectorTerms:
-      - matchExpressions:
-        - key: node-role.kubernetes.io/worker
-          operator: Exists
-EOF
-```
-
-### Wait for LINSTOR Deployment
-
-```bash
-echo "Waiting for LINSTOR components..."
-sleep 120
-
-kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
-  -l app.kubernetes.io/name=piraeus-datastore \
-  -n piraeus-datastore \
-  --timeout=600s
-```
-
-### Verify LINSTOR Storage Pools
-
-```bash
-echo "Checking LINSTOR storage pools..."
-kubectl --kubeconfig=kubeconfig linstor storage-pool list
-```
-
-You should see `lvm-thin` pools on all 5 workers.
-
-### Create LINSTOR Storage Classes
-
-```bash
-echo "Creating LINSTOR storage classes..."
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: linstor-lvm-r1
-provisioner: linstor.csi.linbit.com
-allowVolumeExpansion: true
-volumeBindingMode: WaitForFirstConsumer
-parameters:
-  autoPlace: "1"
-  storagePool: "lvm-thin"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: linstor-lvm-r2
-provisioner: linstor.csi.linbit.com
-allowVolumeExpansion: true
-volumeBindingMode: WaitForFirstConsumer
-parameters:
-  autoPlace: "2"
-  storagePool: "lvm-thin"
----
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: linstor-lvm-r3
-provisioner: linstor.csi.linbit.com
-allowVolumeExpansion: true
-volumeBindingMode: WaitForFirstConsumer
-parameters:
-  autoPlace: "3"
-  storagePool: "lvm-thin"
-EOF
-```
-
-### Verify Storage Classes
-
-```bash
-kubectl --kubeconfig=kubeconfig get storageclass
-```
-
-Expected output:
-- `local-path` (default)
-- `linstor-lvm-r1` (no replication)
-- `linstor-lvm-r2` (2-way replication)
-- `linstor-lvm-r3` (3-way replication)
-
----
-
 ## Configure Pod Security
 
 Enable privileged pods in default namespace:
@@ -1105,7 +843,7 @@ echo -e "\n1. Node Status:"
 kubectl --kubeconfig=kubeconfig get nodes -o wide
 
 echo -e "\n2. System Pods:"
-kubectl --kubeconfig=kubeconfig get pods -A | grep -E 'kube-system|calico|metallb|piraeus'
+kubectl --kubeconfig=kubeconfig get pods -A | grep -E 'kube-system|calico|metallb'
 
 echo -e "\n3. Storage Classes:"
 kubectl --kubeconfig=kubeconfig get storageclass
@@ -1113,8 +851,8 @@ kubectl --kubeconfig=kubeconfig get storageclass
 echo -e "\n4. MetalLB Configuration:"
 kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system
 
-echo -e "\n5. LINSTOR Storage Pools:"
-kubectl --kubeconfig=kubeconfig linstor storage-pool list
+echo -e "\n5. GlusterFS Storage Pools:"
+kubectl --kubeconfig=kubeconfig GlusterFS storage-pool list
 
 echo -e "\n6. Node Resource Usage:"
 kubectl --kubeconfig=kubeconfig top nodes
@@ -1149,30 +887,6 @@ EOF
 kubectl --kubeconfig=kubeconfig get pvc test-local-pvc
 ```
 
-#### Test LINSTOR Storage
-
-```bash
-echo "Testing LINSTOR storage with 3-way replication..."
-kubectl --kubeconfig=kubeconfig apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: test-linstor-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: linstor-lvm-r3
-  resources:
-    requests:
-      storage: 5Gi
-EOF
-
-sleep 10
-kubectl --kubeconfig=kubeconfig get pvc test-linstor-pvc
-
-echo "Checking LINSTOR resources:"
-kubectl --kubeconfig=kubeconfig linstor resource list
-```
 
 ### Test MetalLB
 
@@ -1238,11 +952,6 @@ kubectl --kubeconfig=kubeconfig get storageclass
 # PVC status
 kubectl --kubeconfig=kubeconfig get pvc -A
 
-# LINSTOR resources
-kubectl --kubeconfig=kubeconfig linstor resource list
-kubectl --kubeconfig=kubeconfig linstor storage-pool list
-kubectl --kubeconfig=kubeconfig linstor volume list
-```
 
 #### Check Services
 
@@ -1297,7 +1006,7 @@ done
 ```bash
 # Upgrade control planes one at a time
 talosctl --talosconfig talosconfig --nodes 192.168.85.11 upgrade \
-  --image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.11.0
+  --image factory.talos.dev/installer/646d0c889d8b4a1138bef71dc201edd852a1fac0c6e1e11c1ff2ed3b32bc3f44:v1.11.6
 
 # Wait for node to come back
 sleep 180
@@ -1308,7 +1017,7 @@ sleep 180
 for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
   kubectl --kubeconfig=kubeconfig drain $node --ignore-daemonsets --delete-emptydir-data
   talosctl --talosconfig talosconfig --nodes $node upgrade \
-    --image factory.talos.dev/installer/903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40:v1.11.0
+    --image factory.talos.dev/installer/646d0c889d8b4a1138bef71dc201edd852a1fac0c6e1e11c1ff2ed3b32bc3f44:v1.11.6
   sleep 180
   kubectl --kubeconfig=kubeconfig uncordon $node
 done
@@ -1388,28 +1097,6 @@ kubectl --kubeconfig=kubeconfig logs -n local-path-storage \
 kubectl --kubeconfig=kubeconfig describe pvc <pvc-name>
 ```
 
-#### LINSTOR Issues
-
-```bash
-# Check LINSTOR controller
-kubectl --kubeconfig=kubeconfig logs -n piraeus-datastore \
-  -l app.kubernetes.io/component=linstor-controller --tail=100
-
-# Check satellite pods
-kubectl --kubeconfig=kubeconfig get pods -n piraeus-datastore \
-  -l app.kubernetes.io/component=linstor-satellite
-
-# Check storage pools
-kubectl --kubeconfig=kubeconfig linstor storage-pool list
-
-# Check for errors
-kubectl --kubeconfig=kubeconfig linstor error-reports list
-
-# View specific resource
-kubectl --kubeconfig=kubeconfig linstor resource list
-kubectl --kubeconfig=kubeconfig linstor volume list
-```
-
 ### MetalLB Not Assigning IPs
 
 ```bash
@@ -1479,9 +1166,9 @@ talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
 
 ✅ **Storage**
 - **local-path**: Fast local storage (default)
-- **linstor-lvm-r1**: No replication
-- **linstor-lvm-r2**: 2-way DRBD replication
-- **linstor-lvm-r3**: 3-way DRBD replication
+- **GlusterFS-lvm-r1**: No replication
+- **GlusterFS-lvm-r2**: 2-way DRBD replication
+- **GlusterFS-lvm-r3**: 3-way DRBD replication
 
 ✅ **Monitoring**
 - Metrics Server for resource monitoring
@@ -1516,15 +1203,6 @@ talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
 | Workers | 192.168.85.21-25 |
 | LoadBalancer Pool | 192.168.85.100-150 |
 
-### Storage Summary
-
-| Storage Class | Replication | Use Case |
-|---------------|-------------|----------|
-| local-path | None | Fast, non-critical data |
-| linstor-lvm-r1 | None | Fast LINSTOR storage |
-| linstor-lvm-r2 | 2-way | Important data, HA |
-| linstor-lvm-r3 | 3-way | Critical data, maximum HA |
-
 ---
 
 ## Quick Reference Commands
@@ -1537,8 +1215,6 @@ kubectl --kubeconfig=kubeconfig top nodes
 
 # Storage management
 kubectl --kubeconfig=kubeconfig get storageclass
-kubectl --kubeconfig=kubeconfig linstor storage-pool list
-kubectl --kubeconfig=kubeconfig linstor resource list
 
 # Service management
 kubectl --kubeconfig=kubeconfig get svc -A
@@ -1559,6 +1235,5 @@ kubectl --kubeconfig=kubeconfig uncordon <node>
 
 For support:
 - **Talos**: https://www.talos.dev/
-- **LINSTOR**: https://linbit.com/drbd-user-guide/linstor-guide-1_0-en/
+- **GlusterFS**: https://linbit.com/drbd-user-guide/GlusterFS-guide-1_0-en/
 - **Kubernetes**: https://kubernetes.io/docs/
-- **kubectl-linstor**: https://github.com/piraeusdatastore/kubectl-linstor
