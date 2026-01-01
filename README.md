@@ -1,4 +1,4 @@
-# Talos HA Kubernetes Cluster – Complete Production Guide v2
+# Talos HA Kubernetes Cluster – Complete Production Guide v3
 
 This is a **comprehensive, production-ready guide** to build a **high-availability Talos Linux Kubernetes cluster** with dual storage classes, monitoring, and VMware integration.
 
@@ -8,9 +8,10 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 - **Kubernetes**: v1.33.7
 - **5 Control Planes** with VIP failover
 - **5 Worker Nodes** with `/dev/sdb` for distributed storage
-- **Calico**: v3.29.7 CNI
+- **Calico**: v3.30.5 CNI
 - **MetalLB**: v0.14.9 LoadBalancer
 - **Local Path Provisioner**: v0.0.33
+- **Rook-Ceph**: v1.17.9 Distributed Storage
 - **Metrics Server**: For resource monitoring
 
 ---
@@ -1623,7 +1624,17 @@ Ceph provides replication (3 copies by default), but this is NOT a backup:
 
 ```bash
 # Create snapshot
-kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/r
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  rbd snap create pool-name/image-name@snapshot-name
+
+# List snapshots
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  rbd snap ls pool-name/image-name
+
+# Restore snapshot
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  rbd snap rollback pool-name/image-name@snapshot-name
+```
 
 
 
@@ -1720,6 +1731,283 @@ kubectl --kubeconfig=kubeconfig get nodes
 
 ---
 
+## Backup Strategy
+
+### etcd Backups
+
+The etcd cluster stores all Kubernetes state. Regular backups are essential:
+
+```bash
+# Create automated etcd backup script
+cat > etcd-backup.sh << 'EOF'
+#!/bin/bash
+BACKUP_DIR="/var/lib/etcd/backups"
+DATE=$(date +%Y%m%d-%H%M%S)
+BACKUP_FILE="etcd-backup-${DATE}.db"
+
+# Create backup directory
+mkdir -p $BACKUP_DIR
+
+# Take snapshot from any control plane (using VIP)
+talosctl --talosconfig talosconfig \
+  --nodes 192.168.85.10 \
+  --endpoints 192.168.85.10 \
+  etcd snapshot ${BACKUP_DIR}/${BACKUP_FILE}
+
+# Keep only last 7 days of backups
+find $BACKUP_DIR -name "etcd-backup-*.db" -mtime +7 -delete
+
+echo "etcd backup completed: ${BACKUP_FILE}"
+EOF
+
+chmod +x etcd-backup.sh
+
+# Schedule daily backups (run on control plane)
+# Add to crontab: 0 2 * * * /path/to/etcd-backup.sh
+```
+
+### Application Backups with Velero
+
+Install Velero for comprehensive cluster backups:
+
+```bash
+# Install Velero CLI
+brew install velero  # macOS
+# or download from https://github.com/vmware-tanzu/velero/releases
+
+# Create Velero namespace
+kubectl --kubeconfig=kubeconfig create namespace velero
+
+# Install Velero with Restic support
+velero install \
+  --provider aws \
+  --plugins velero/velero-plugin-for-aws:v1.5.0 \
+  --bucket velero-backups \
+  --secret-file ./credentials-velero \
+  --use-restic \
+  --default-volumes-to-restic=false \
+  --namespace velero \
+  --kubeconfig=kubeconfig
+```
+
+### Backup Configuration Files
+
+```bash
+# Create backup script for configurations
+cat > backup-configs.sh << 'EOF'
+#!/bin/bash
+BACKUP_DIR="cluster-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p $BACKUP_DIR
+
+# Backup Talos configurations
+cp talosconfig $BACKUP_DIR/
+cp cp-*.yaml $BACKUP_DIR/
+cp worker-*.yaml $BACKUP_DIR/
+cp controlplane.yaml $BACKUP_DIR/
+cp worker.yaml $BACKUP_DIR/
+cp cp-patch.yaml $BACKUP_DIR/
+cp worker-patch.yaml $BACKUP_DIR/
+
+# Backup Kubernetes configurations
+cp kubeconfig $BACKUP_DIR/
+
+# Backup Ceph configurations
+cp ceph-*.yaml $BACKUP_DIR/
+
+# Create archive
+tar -czf ${BACKUP_DIR}.tar.gz $BACKUP_DIR/
+rm -rf $BACKUP_DIR/
+
+echo "Configuration backup completed: ${BACKUP_DIR}.tar.gz"
+EOF
+
+chmod +x backup-configs.sh
+```
+
+### Backup Testing & Restoration
+
+```bash
+# Test etcd restoration (in maintenance mode)
+talosctl --talosconfig talosconfig \
+  --nodes 192.168.85.11 \
+  etcd restore /var/lib/etcd/backups/etcd-backup-20260101-020000.db
+
+# Test Velero restoration
+velero restore create --from-backup backup-name --namespace velero
+
+# Verify restoration
+kubectl --kubeconfig=kubeconfig get all -A
+```
+
+### Backup Schedule
+
+| Backup Type | Frequency | Retention | Location |
+|-------------|-----------|-----------|----------|
+| etcd snapshots | Daily | 7 days | Control plane nodes |
+| Velero backups | Daily | 30 days | Object storage |
+| Configuration files | Weekly | 90 days | Secure storage |
+| Ceph data | Weekly | 60 days | Object storage |
+
+---
+
+## Security Hardening
+
+### Network Security
+
+Implement network policies to restrict traffic:
+
+```bash
+# Default deny all traffic
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF
+
+# Allow DNS resolution
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+EOF
+```
+
+### Pod Security Standards
+
+```bash
+# Enforce restricted pod security
+kubectl --kubeconfig=kubeconfig label namespace default \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted \
+  --overwrite
+```
+
+### RBAC Configuration
+
+```bash
+# Create read-only role for monitoring
+kubectl --kubeconfig=kubeconfig apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-read-only
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: monitoring-read-only
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monitoring-read-only
+subjects:
+- kind: ServiceAccount
+  name: monitoring
+  namespace: monitoring
+EOF
+```
+
+### Security Monitoring
+
+```bash
+# Install Falco for runtime security
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/falcosecurity/falco/master/k8s/falco.yaml
+
+# View security events
+kubectl --kubeconfig=kubeconfig logs -n falco -l app=falco
+```
+
+---
+
+## Performance Tuning
+
+### Ceph Performance Optimization
+
+```bash
+# Optimize Ceph OSD configuration
+kubectl --kubeconfig=kubeconfig patch cephcluster rook-ceph -n rook-ceph --type='json' \
+  -p='[{"op": "add", "path": "/spec/resources/osd", "value": {"limits": {"memory": "8Gi"}, "requests": {"cpu": "2000m", "memory": "4Gi"}}}]'
+
+# Tune Ceph pool settings
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd pool set replicapool size 3
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd pool set replicapool pg_num 128
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- \
+  ceph osd pool set replicapool pgp_num 128
+```
+
+### Kubernetes Performance
+
+```bash
+# Optimize kubelet settings
+# Edit control plane configs to add:
+# machine:
+#   kubelet:
+#     extraArgs:
+#       max-pods: "200"
+#       pod-max-pids: "2048"
+#       serialize-image-pulls: "false"
+#       registry-burst: "10"
+#       registry-qps: "5"
+```
+
+### Network Performance
+
+```bash
+# Optimize Calico for better performance
+kubectl --kubeconfig=kubeconfig patch installation default -n calico-system --type='json' \
+  -p='[{"op": "replace", "path": "/spec/calicoNetwork/ipipMode", "value": "Always"}]'
+
+# Enable BGP for better routing
+kubectl --kubeconfig=kubeconfig patch felixconfiguration default -n calico-system --type='json' \
+  -p='[{"op": "add", "path": "/spec/bgpEnabled", "value": true}]'
+```
+
+### Resource Monitoring
+
+```bash
+# Install Prometheus for detailed monitoring
+kubectl --kubeconfig=kubeconfig create namespace monitoring
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://github.com/prometheus-operator/prometheus-operator/releases/latest/download/bundle.yaml
+
+# Set up Grafana dashboards
+kubectl --kubeconfig=kubeconfig apply -f \
+  https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/grafana/dashboards/nginx.yaml
+```
+
+---
+
 ## Operations
 
 ### Daily Operations
@@ -1746,6 +2034,13 @@ kubectl --kubeconfig=kubeconfig get storageclass
 
 # PVC status
 kubectl --kubeconfig=kubeconfig get pvc -A
+
+# Ceph cluster health
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph -s
+
+# Storage usage
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph df
+```
 
 
 #### Check Services
@@ -1843,6 +2138,241 @@ talosctl --talosconfig talosconfig --nodes 192.168.85.11 \
 mkdir -p cluster-backup-$(date +%Y%m%d)
 cp *.yaml talosconfig kubeconfig cluster-backup-$(date +%Y%m%d)/
 tar -czf cluster-backup-$(date +%Y%m%d).tar.gz cluster-backup-$(date +%Y%m%d)/
+```
+
+---
+
+## Troubleshooting Index
+
+### 🔍 Quick Diagnosis
+
+| Symptom | Likely Cause | First Check | Solution |
+|---------|--------------|-------------|----------|
+| Nodes NotReady | Network/CNI issue | `kubectl get nodes -o wide` | Check Calico pods |
+| VIP not responding | etcd quorum loss | `talosctl get members` | Reboot control planes |
+| PVC stuck Pending | Storage issue | `kubectl get pvc -A` | Check Ceph health |
+| Pod CrashLoopBackoff | Resource limit | `kubectl describe pod` | Check resource requests |
+| API server timeout | Control plane overload | `kubectl top nodes` | Scale control planes |
+
+### 📋 Common Issues by Component
+
+#### Talos Issues
+- **Maintenance mode**: Nodes booting but not accepting config
+- **Network config**: Static IPs not applying
+- **VMware Tools**: Extension not loading
+- **etcd**: Cluster not forming quorum
+
+#### Kubernetes Issues  
+- **CNI**: Pods not getting IP addresses
+- **DNS**: Name resolution failures
+- **Scheduling**: Pods stuck in Pending
+- **RBAC**: Permission denied errors
+
+#### Storage Issues
+- **Ceph**: OSDs not starting
+- **Local Path**: Provisioner errors
+- **CSI**: Driver connection issues
+- **PV**: Volume attachment failures
+
+#### Network Issues
+- **MetalLB**: IPs not being assigned
+- **Calico**: Network policy blocking
+- **VIP**: Failover not working
+- **Ingress**: Service not accessible
+
+### 🚨 Emergency Procedures
+
+#### Complete Cluster Recovery
+```bash
+# 1. Assess damage
+kubectl --kubeconfig=kubeconfig get nodes,pods -A
+talosctl --talosconfig talosconfig health
+
+# 2. Restore etcd if needed
+talosctl --talosconfig talosconfig etcd restore /path/to/backup.db
+
+# 3. Restart components
+kubectl --kubeconfig=kubeconfig delete pod --all -n kube-system
+kubectl --kubeconfig=kubeconfig delete pod --all -n calico-system
+```
+
+#### Force Cluster Reset
+```bash
+# Last resort - complete reset
+for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
+  talosctl --talosconfig talosconfig reset -n $node -e $node --graceful=false --reboot
+done
+```
+
+---
+
+## Quick Reference
+
+### 🎯 Essential Commands
+
+#### Cluster Status
+```bash
+# Overall health
+kubectl --kubeconfig=kubeconfig get nodes
+kubectl --kubeconfig=kubeconfig get pods -A
+talosctl --talosconfig talosconfig health
+
+# Resource usage
+kubectl --kubeconfig=kubeconfig top nodes
+kubectl --kubeconfig=kubeconfig top pods -A
+
+# Storage status
+kubectl --kubeconfig=kubeconfig get storageclass,pvc -A
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph -s
+```
+
+#### Network & Services
+```bash
+# Services and endpoints
+kubectl --kubeconfig=kubeconfig get svc -A
+kubectl --kubeconfig=kubeconfig get endpoints -A
+
+# MetalLB status
+kubectl --kubeconfig=kubeconfig get ipaddresspool -n metallb-system
+
+# Network policies
+kubectl --kubeconfig=kubeconfig get networkpolicy -A
+```
+
+#### Talos Management
+```bash
+# Node access
+talosctl --talosconfig talosconfig --nodes 192.168.85.10 dashboard
+talosctl --talosconfig talosconfig --nodes 192.168.85.10 get members
+
+# Service management
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 service kubelet status
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 service etcd status
+
+# Configuration
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 get machineconfig
+```
+
+### 📁 Important File Locations
+
+#### Configuration Files
+- `talosconfig` - Talos CLI configuration
+- `kubeconfig` - Kubernetes CLI configuration  
+- `cp-*.yaml` - Control plane node configs
+- `worker-*.yaml` - Worker node configs
+- `cp-patch.yaml` - Control plane patch template
+- `worker-patch.yaml` - Worker patch template
+
+#### Ceph Configuration Files
+- `ceph-cluster.yaml` - Ceph cluster definition
+- `ceph-blockpool.yaml` - Block storage configuration
+- `ceph-filesystem.yaml` - Shared filesystem configuration
+- `ceph-dashboard-external.yaml` - Dashboard service
+
+### 🌐 Network Information
+
+#### IP Address Ranges
+| Purpose | Range | Notes |
+|---------|-------|-------|
+| Control Planes | 192.168.85.11-15 | 5 nodes |
+| Workers | 192.168.85.21-25 | 5 nodes |
+| VIP | 192.168.85.10 | HA API endpoint |
+| LoadBalancer | 192.168.85.100-150 | MetalLB pool |
+| Gateway | 192.168.85.1 | Default route |
+
+#### Port Mappings
+| Port | Service | Direction |
+|------|---------|-----------|
+| 6443 | Kubernetes API | Inbound |
+| 50000-51000 | Talos API | Inbound |
+| 7000 | Ceph Dashboard | Inbound (LB) |
+| 80/443 | HTTP/HTTPS | Inbound (LB) |
+| 53 | DNS | All |
+
+### 🔧 Maintenance Commands
+
+#### Node Operations
+```bash
+# Drain node for maintenance
+kubectl --kubeconfig=kubeconfig drain <node> --ignore-daemonsets --delete-emptydir-data
+
+# Uncordon node
+kubectl --kubeconfig=kubeconfig uncordon <node>
+
+# Reboot node
+talosctl --talosconfig talosconfig --nodes <node> reboot
+```
+
+#### Backup Operations
+```bash
+# etcd snapshot
+talosctl --talosconfig talosconfig --nodes 192.168.85.11 etcd snapshot /backup/etcd.db
+
+# Configuration backup
+tar -czf cluster-backup.tar.gz talosconfig kubeconfig *.yaml
+```
+
+#### Upgrade Operations
+```bash
+# Kubernetes upgrade
+talosctl --talosconfig talosconfig --nodes <node> upgrade-k8s --to 1.33.8
+
+# Talos upgrade
+talosctl --talosconfig talosconfig --nodes <node> upgrade --image <new-image>
+```
+
+### 📊 Monitoring Commands
+
+#### Health Checks
+```bash
+# Node readiness
+kubectl --kubeconfig=kubeconfig get nodes -o wide
+
+# Pod health
+kubectl --kubeconfig=kubeconfig get pods -A --field-selector=status.phase!=Running
+
+# Service health
+kubectl --kubeconfig=kubeconfig get svc -A | grep -E "LoadBalancer|NodePort"
+```
+
+#### Performance Metrics
+```bash
+# Resource usage
+kubectl --kubeconfig=kubeconfig top nodes
+kubectl --kubeconfig=kubeconfig top pods -A --sort-by=memory
+
+# Ceph performance
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph df
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph osd perf
+```
+
+### 🚨 Common Fixes
+
+#### Reset Network
+```bash
+# Restart Calico on all nodes
+kubectl --kubeconfig=kubeconfig delete pod -n calico-system -l k8s-app=calico-node
+
+# Reset MetalLB
+kubectl --kubeconfig=kubeconfig delete pod -n metallb-system -l app=metallb
+```
+
+#### Fix Storage Issues
+```bash
+# Restart Ceph operators
+kubectl --kubeconfig=kubeconfig delete pod -n rook-ceph -l app=rook-ceph-operator
+
+# Check OSD status
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph osd tree
+```
+
+#### Clear Resource Issues
+```bash
+# Clear evicted pods
+kubectl --kubeconfig=kubeconfig delete pods -A --field-selector=status.phase=Failed
+
+# Restart stuck deployments
+kubectl --kubeconfig=kubeconfig rollout restart deployment/<name> -n <namespace>
 ```
 
 ---
@@ -2021,10 +2551,18 @@ kubectl --kubeconfig=kubeconfig uncordon <node>
 ---
 
 
-**Remove Cluster !!!**
+## Cluster Removal
 
+**⚠️ WARNING: This will completely destroy the cluster and all data!**
 
-for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15 192.168.85.21 192.168.85.22 192.168.85.23; do
+```bash
+# Delete all workloads first
+kubectl --kubeconfig=kubeconfig delete pvc --all -A
+kubectl --kubeconfig=kubeconfig delete deployments --all -A
+kubectl --kubeconfig=kubeconfig delete services --all -A
+
+# Reset all nodes
+for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.15 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
   echo "Wiping disks on $node..."
   talosctl --talosconfig talosconfig wipe disk sda -n $node -e $node 
   talosctl --talosconfig talosconfig wipe disk sdb -n $node -e $node
@@ -2032,12 +2570,26 @@ for node in 192.168.85.11 192.168.85.12 192.168.85.13 192.168.85.14 192.168.85.1
   echo "Resetting $node..."
   talosctl --talosconfig talosconfig reset -n $node -e $node --graceful=false --reboot
 done
-
+```
 
 ---
 
-**Cluster is production-ready!**
+## 🎉 Cluster is Production-Ready!
 
-For support:
+Your Talos HA Kubernetes cluster is now fully operational with:
+- ✅ High availability control plane
+- ✅ Distributed storage (Ceph)
+- ✅ Load balancing (MetalLB)
+- ✅ Monitoring (Metrics Server)
+- ✅ VMware integration
+
+### Support Resources
 - **Talos**: https://www.talos.dev/
 - **Kubernetes**: https://kubernetes.io/docs/
+- **Calico**: https://docs.projectcalico.org/
+- **Rook-Ceph**: https://rook.io/docs/rook/latest/
+- **MetalLB**: https://metallb.universe.tf/
+
+---
+
+*Last Updated: January 2026*
