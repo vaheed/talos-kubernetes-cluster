@@ -5,7 +5,7 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 **Specifications:**
 - **Network**: `192.168.85.0/24`
 - **Talos**: v1.11.6 with VMware Tools (Factory Image)
-- **Kubernetes**: v1.33.7
+- **Kubernetes**: v1.30.8
 - **5 Control Planes** with VIP failover
 - **5 Worker Nodes** with `/dev/sdb` for distributed storage
 - **Calico**: v3.30.5 CNI
@@ -32,11 +32,13 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 12. [Install MetalLB](#install-metallb)
 13. [Install Metrics Server](#install-metrics-server)
 14. [Install Local Path Storage](#install-local-path-storage)
-15. [Install Ceph Storage](#install-Ceph-storage)
-16. [Configure Pod Security](#configure-pod-security)
-17. [Verification](#verification)
-18. [Operations](#operations)
-19. [Troubleshooting](#troubleshooting)
+15. [Install Ceph Storage](#install-ceph-storage)
+16. [Verification](#verification)
+17. [Backup Strategy](#backup-strategy)
+18. [Security Hardening](#security-hardening)
+19. [Performance Tuning](#performance-tuning)
+20. [Operations](#operations)
+21. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -71,7 +73,7 @@ This is a **comprehensive, production-ready guide** to build a **high-availabili
 ### Service Ranges
 | Service | Range/Address |
 |---------|---------------|
-| MetalLB Pool | 192.168.85.100 - 192.168.85.150 |
+| MetalLB Pool | 192.168.85.100 - 192.168.85.199 |
 | Pod Network | 10.244.0.0/16 (Calico default) |
 | Service Network | 10.96.0.0/12 (Kubernetes default) |
 
@@ -92,19 +94,24 @@ graph TD
         CP5[cp-05<br/>192.168.85.15<br/>VMware Tools]
     end
     
-    subgraph "Worker Nodes - Compute + Storage"
-        W1[worker-01<br/>192.168.85.21<br/>/dev/sdb DRBD]
-        W2[worker-02<br/>192.168.85.22<br/>/dev/sdb DRBD]
-        W3[worker-03<br/>192.168.85.23<br/>/dev/sdb DRBD]
-        W4[worker-04<br/>192.168.85.24<br/>/dev/sdb DRBD]
-        W5[worker-05<br/>192.168.85.25<br/>/dev/sdb DRBD]
+    subgraph "Worker Nodes - Compute + Ceph Storage"
+        W1[worker-01<br/>192.168.85.21<br/>/dev/sdb OSD]
+        W2[worker-02<br/>192.168.85.22<br/>/dev/sdb OSD]
+        W3[worker-03<br/>192.168.85.23<br/>/dev/sdb OSD]
+        W4[worker-04<br/>192.168.85.24<br/>/dev/sdb OSD]
+        W5[worker-05<br/>192.168.85.25<br/>/dev/sdb OSD]
     end
     
-    subgraph "Services"
-        LB[MetalLB<br/>192.168.85.100-150]
-        STOR1[Local Path<br/>Default SC]
-        STOR2[Ceph<br/>Replicated SC]
-        MON[Metrics Server]
+    subgraph "Kubernetes Services"
+        CNI[Calico CNI<br/>v3.30.5]
+        LB[MetalLB<br/>192.168.85.100-199]
+        MON[Metrics Server<br/>Resource Monitoring]
+    end
+    
+    subgraph "Storage Layer"
+        STOR1[Local Path<br/>Default SC<br/>Node Local]
+        STOR2[Rook-Ceph<br/>Replicated SC<br/>3x Replication]
+        CEPH[Ceph Cluster<br/>5 OSDs<br/>Distributed]
     end
     
     GW --> VIP
@@ -114,17 +121,58 @@ graph TD
     VIP --> CP4
     VIP --> CP5
     
-    CP1 -.Workload.-> W1
-    CP2 -.Workload.-> W2
-    CP3 -.Workload.-> W3
-    CP4 -.Workload.-> W4
-    CP5 -.Workload.-> W5
+    CP1 -.Workload Scheduling.-> W1
+    CP2 -.Workload Scheduling.-> W2
+    CP3 -.Workload Scheduling.-> W3
+    CP4 -.Workload Scheduling.-> W4
+    CP5 -.Workload Scheduling.-> W5
     
-    W1 -.DRBD Replication.-> W2
-    W2 -.DRBD Replication.-> W3
-    W3 -.DRBD Replication.-> W4
-    W4 -.DRBD Replication.-> W5
+    W1 --> CEPH
+    W2 --> CEPH
+    W3 --> CEPH
+    W4 --> CEPH
+    W5 --> CEPH
+    
+    CEPH -.3x Replication.-> CEPH
+    
+    CP1 -.CNI.-> CNI
+    CP2 -.CNI.-> CNI
+    CP3 -.CNI.-> CNI
+    CP4 -.CNI.-> CNI
+    CP5 -.CNI.-> CNI
+    W1 -.CNI.-> CNI
+    W2 -.CNI.-> CNI
+    W3 -.CNI.-> CNI
+    W4 -.CNI.-> CNI
+    W5 -.CNI.-> CNI
+    
+    CNI --> LB
+    LB --> STOR1
+    LB --> STOR2
+    STOR2 --> CEPH
+    
+    CP1 -.Monitoring.-> MON
+    CP2 -.Monitoring.-> MON
+    CP3 -.Monitoring.-> MON
+    CP4 -.Monitoring.-> MON
+    CP5 -.Monitoring.-> MON
+    W1 -.Monitoring.-> MON
+    W2 -.Monitoring.-> MON
+    W3 -.Monitoring.-> MON
+    W4 -.Monitoring.-> MON
+    W5 -.Monitoring.-> MON
 ```
+
+**Architecture Overview:**
+
+- **High Availability Control Plane**: 5-node etcd cluster with VIP failover at `192.168.85.10`
+- **Compute + Storage Nodes**: 5 worker nodes providing both compute and Ceph OSD storage
+- **Dual Storage Classes**: Local Path (fast, node-local) and Ceph (distributed, replicated)
+- **Load Balancing**: MetalLB provides LoadBalancer services with IP pool `192.168.85.100-199`
+- **Container Networking**: Calico CNI for pod-to-pod communication and network policies
+- **Resource Monitoring**: Metrics Server enables `kubectl top` commands and HPA
+- **VMware Integration**: All nodes include VMware Tools for vSphere integration
+- **Ceph Distributed Storage**: 5 OSDs with 3x replication providing persistent block and file storage
 
 ---
 
@@ -238,7 +286,7 @@ Create the initial cluster configuration:
 ```bash
 # Generate base configs
 talosctl gen config "talos-cluster" "https://vip.talos.vaheed.net:6443" \
-  --kubernetes-version v1.33.7 \
+  --kubernetes-version v1.30.8 \
   --install-image factory.talos.dev/installer/646d0c889d8b4a1138bef71dc201edd852a1fac0c6e1e11c1ff2ed3b32bc3f44:v1.11.6
 ```
 
@@ -822,18 +870,23 @@ kubectl --kubeconfig=kubeconfig get storageclass
 
 ---
 
-## Configure Pod Security
+## Install Ceph Storage
 
-Enable privileged pods in default namespace:
+### Configure Pod Security
+
+Enable privileged pods for Ceph in both default and rook-ceph namespaces:
 
 ```bash
-echo "Configuring pod security..."
+echo "Configuring pod security for default namespace..."
 kubectl --kubeconfig=kubeconfig label namespace default \
   pod-security.kubernetes.io/enforce=privileged \
   --overwrite
-```
 
----
+echo "Configuring pod security for rook-ceph namespace..."
+kubectl --kubeconfig=kubeconfig label namespace rook-ceph \
+  pod-security.kubernetes.io/enforce=privileged \
+  --overwrite
+```
 
 ### Install Rook Operator
 
@@ -849,18 +902,6 @@ kubectl --kubeconfig=kubeconfig apply -f \
   https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/operator.yaml
 ```
 
-
-## Configure Pod Security 
-
-Enable privileged pods in rook-ceph namespace:
-
-```bash
-echo "Configuring pod security..."
-kubectl --kubeconfig=kubeconfig label namespace rook-ceph \
-  pod-security.kubernetes.io/enforce=privileged \
-  --overwrite
-```
-  
 ### Wait for Operator
 
 ```bash
@@ -873,7 +914,7 @@ kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
 
 ### Create Ceph Cluster
 
-first get workers name:
+First, get the worker node names to ensure they match the configuration:
 ```bash
 talosctl --talosconfig talosconfig \
   --endpoints 192.168.85.10 \
@@ -881,7 +922,7 @@ talosctl --talosconfig talosconfig \
   get members
 ```
 
-after that changes workers name in config
+**Important:** Ensure the worker names in the Ceph configuration (`worker-01`, `worker-02`, etc.) match the actual node names returned by the command above. If they don't match, update the configuration accordingly.
 
 Create `ceph-cluster.yaml`:
 
@@ -1205,7 +1246,7 @@ kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- 
 ```bash
 echo "Installing Ceph toolbox for troubleshooting..."
 kubectl --kubeconfig=kubeconfig apply -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/toolbox.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/toolbox.yaml
 
 kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
   -l app=rook-ceph-tools \
@@ -1546,11 +1587,11 @@ kubectl --kubeconfig=kubeconfig delete -f ceph-cluster.yaml
 
 # Delete operator
 kubectl --kubeconfig=kubeconfig delete -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/operator.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/operator.yaml
 kubectl --kubeconfig=kubeconfig delete -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/common.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/common.yaml
 kubectl --kubeconfig=kubeconfig delete -f \
-  https://raw.githubusercontent.com/rook/rook/v1.15.9/deploy/examples/crds.yaml
+  https://raw.githubusercontent.com/rook/rook/v1.17.9/deploy/examples/crds.yaml
 
 # Cleanup data on each worker (destructive!)
 for node in 192.168.85.21 192.168.85.22 192.168.85.23 192.168.85.24 192.168.85.25; do
@@ -1660,6 +1701,10 @@ kubectl --kubeconfig=kubeconfig get storageclass
 echo -e "\n4. MetalLB Configuration:"
 kubectl --kubeconfig=kubeconfig get ipaddresspool,l2advertisement -n metallb-system
 
+echo -e "\n5. Ceph Cluster Status:"
+kubectl --kubeconfig=kubeconfig get pods -n rook-ceph
+kubectl --kubeconfig=kubeconfig -n rook-ceph exec -it deploy/rook-ceph-tools -- ceph -s
+
 echo -e "\n6. Node Resource Usage:"
 kubectl --kubeconfig=kubeconfig top nodes
 
@@ -1727,6 +1772,17 @@ talosctl --talosconfig talosconfig --endpoints 192.168.85.10 get members
 
 echo "Kubernetes API still accessible:"
 kubectl --kubeconfig=kubeconfig get nodes
+```
+
+### Cleanup Test Resources
+
+```bash
+echo "Cleaning up verification test resources..."
+kubectl --kubeconfig=kubeconfig delete pod test-ceph-pod-2 --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete pod test-cephfs-pod-1 test-cephfs-pod-2 --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete pvc test-ceph-pvc test-cephfs-pvc test-local-pvc --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete deployment nginx-test --ignore-not-found
+kubectl --kubeconfig=kubeconfig delete svc nginx-test --ignore-not-found
 ```
 
 ---
