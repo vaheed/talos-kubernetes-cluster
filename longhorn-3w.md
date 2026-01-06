@@ -184,8 +184,7 @@ Complete production-ready guide for building a high-availability Talos Linux Kub
 
 ```bash
 # Download factory ISO with VMware Tools
-SCHEMATIC_ID="903b2da78f99adef03cbbd4df6714563823f63218508800751560d3bc3557e40"
-wget https://factory.talos.dev/image/${SCHEMATIC_ID}/v1.11.6/vmware-amd64.iso \
+wget https://factory.talos.dev/image/dfd1ac9abdf529ca644694b17af0ce1a2ae23a5cccdff39439aa7f0774901e90/v1.11.6/vmware-amd64.iso \
   -O talos-vmware-1.11.6.iso
 ```
 
@@ -223,15 +222,10 @@ talosctl version --client
 ### Step 4: Generate Base Configuration
 
 ```bash
-# Set cluster variables
-export CLUSTER_NAME="talos-cluster"
-export CLUSTER_VIP="192.168.29.10"
-export CLUSTER_ENDPOINT="https://29.talos.vaheed.net:6443"
-
 # Generate configurations
-talosctl gen config "${CLUSTER_NAME}" "${CLUSTER_ENDPOINT}" \
+talosctl gen config "talos29" "https://29.talos.vaheed.net:6443" \
   --kubernetes-version v1.30.8 \
-  --install-image factory.talos.dev/installer/${SCHEMATIC_ID}:v1.11.6
+  --install-image factory.talos.dev/installer/dfd1ac9abdf529ca644694b17af0ce1a2ae23a5cccdff39439aa7f0774901e90:v1.11.6
 ```
 
 **Files created:**
@@ -287,9 +281,6 @@ machine:
     nodeIP:
       validSubnets:
         - 192.168.29.0/24
-
-  features:
-    iscsi: true
 
 cluster:
   network:
@@ -350,9 +341,6 @@ machine:
     - device: /dev/sdb
       partitions:
         - mountpoint: /var/mnt/longhorn
-
-  features:
-    iscsi: true
 
   sysctls:
     vm.max_map_count: "262144"
