@@ -264,6 +264,19 @@ machine:
       - ip: 192.168.29.23
         aliases: ["w03"]
 
+  registries:
+    mirrors:
+      docker.io:
+        endpoints: ["https://registry.vaheed.net:2053"]
+      gcr.io:
+        endpoints: ["https://registry.vaheed.net:2083"]
+      ghcr.io:
+        endpoints: ["https://registry.vaheed.net:2087"]
+      quay.io:
+        endpoints: ["https://registry.vaheed.net:8443"]
+      registry.k8s.io:
+        endpoints: ["https://registry.vaheed.net:2096"]
+
   certSANs:
     - 192.168.29.10
     - 29.talos.vaheed.net
@@ -303,6 +316,19 @@ machine:
         aliases: ["w02"]
       - ip: 192.168.29.23
         aliases: ["w03"]
+
+  registries:
+    mirrors:
+      docker.io:
+        endpoints: ["https://registry.vaheed.net:2053"]
+      gcr.io:
+        endpoints: ["https://registry.vaheed.net:2083"]
+      ghcr.io:
+        endpoints: ["https://registry.vaheed.net:2087"]
+      quay.io:
+        endpoints: ["https://registry.vaheed.net:8443"]
+      registry.k8s.io:
+        endpoints: ["https://registry.vaheed.net:2096"]
 
   kubelet:
     nodeIP:
