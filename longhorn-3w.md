@@ -334,14 +334,12 @@ machine:
     nodeIP:
       validSubnets:
         - 192.168.29.0/24
-    extraMounts:
-      - destination: /var/lib/longhorn
-        type: bind
-        source: /var/lib/longhorn
-        options:
-          - bind
-          - rshared
-          - rw
+
+  disks:
+    - device: sdb
+      partitions:
+        - mountpoint: /var/lib/longhorn
+          filesystem: ext4
 
   sysctls:
     vm.max_map_count: "262144"
