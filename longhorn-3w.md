@@ -344,10 +344,9 @@ machine:
           - rw
 
   disks:
-    - device: sdb
+    - device: /dev/sdb
       partitions:
         - mountpoint: /var/mnt/longhorn
-          filesystem: ext4
 
   sysctls:
     vm.max_map_count: "262144"
