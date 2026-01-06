@@ -334,11 +334,19 @@ machine:
     nodeIP:
       validSubnets:
         - 192.168.29.0/24
+    extraMounts:
+      - destination: /var/lib/longhorn
+        type: bind
+        source: /var/mnt/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
 
   disks:
     - device: sdb
       partitions:
-        - mountpoint: /var/lib/longhorn
+        - mountpoint: /var/mnt/longhorn
           filesystem: ext4
 
   sysctls:
