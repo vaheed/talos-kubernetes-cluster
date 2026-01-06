@@ -288,6 +288,9 @@ machine:
       validSubnets:
         - 192.168.29.0/24
 
+  features:
+    iscsi: true
+
 cluster:
   network:
     cni:
@@ -347,6 +350,9 @@ machine:
     - device: /dev/sdb
       partitions:
         - mountpoint: /var/mnt/longhorn
+
+  features:
+    iscsi: true
 
   sysctls:
     vm.max_map_count: "262144"
