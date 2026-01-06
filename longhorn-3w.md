@@ -183,7 +183,7 @@ Complete production-ready guide for building a high-availability Talos Linux Kub
 ### Step 1: Download Talos with VMware Tools
 
 ```bash
-# Download factory ISO with VMware Tools
+# Download factory ISO with VMware Tools + iscsi tools
 wget https://factory.talos.dev/image/dfd1ac9abdf529ca644694b17af0ce1a2ae23a5cccdff39439aa7f0774901e90/v1.11.6/vmware-amd64.iso \
   -O talos-vmware-1.11.6.iso
 ```
