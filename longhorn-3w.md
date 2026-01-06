@@ -574,7 +574,7 @@ helm install longhorn longhorn/longhorn \
   --set defaultSettings.defaultDataPath="/var/lib/longhorn" \
   --set defaultSettings.replicaCount=3 \
   --set persistence.defaultClass=true \
-  --set persistence.defaultFsType=ext4 \
+  --set persistence.defaultFsType=xfs \
   --set persistence.defaultClassReplicaCount=3
 
 # Wait for Longhorn
