@@ -728,13 +728,7 @@ dns:
 
 apps:
   metrics-server:
-    enabled: false  # Already installed
-  cert-manager:
-    enabled: true
-  external-dns:
-    enabled: true
-  ingress-nginx:
-    enabled: true
+    enabled: false
 
 # Longhorn storage already installed
 storage:
