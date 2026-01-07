@@ -676,6 +676,28 @@ Before installing APL-Core, ensure you have:
   - Zone:Zone:Read
   - Zone:DNS:Edit
 
+```bash
+kubectl --kubeconfig=kubeconfig create ns apl-system
+kubectl --kubeconfig=kubeconfig create ns apl-operator
+kubectl --kubeconfig=kubeconfig create ns gitea
+
+kubectl label namespace apl-operator \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged \
+  --overwrite
+kubectl label namespace apl-system \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged \
+  --overwrite
+kubectl label namespace gitea \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged \
+  --overwrite
+```
+
 ### Configure Cloudflare DNS Token
 
 ```bash
