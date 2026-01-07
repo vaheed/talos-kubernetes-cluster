@@ -698,6 +698,17 @@ kubectl label namespace gitea \
   --overwrite
 ```
 
+# Generate an Age key if you don’t have one
+```bash
+apt install age -y
+age-keygen -o age-key.txt
+export SOPS_AGE_KEY=$(grep AGE-SECRET-KEY-1 age-key.txt)
+
+kubectl create secret generic apl-sops-secrets \
+  --from-literal=SOPS_AGE_KEY="$SOPS_AGE_KEY" \
+  -n apl-operator
+```
+
 ### Configure Cloudflare DNS Token
 
 ```bash
