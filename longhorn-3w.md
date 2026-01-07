@@ -698,7 +698,8 @@ kubectl label namespace gitea \
   --overwrite
 ```
 
-# Generate an Age key if you don’t have one
+### Generate an Age key if you don’t have one
+
 ```bash
 apt install age -y
 age-keygen -o age-key.txt
@@ -714,8 +715,6 @@ kubectl create secret generic apl-sops-secrets \
 ```bash
 # Set your Cloudflare credentials
 export CF_API_TOKEN="your-cloudflare-api-token"
-export CF_ACCOUNT_ID="your-account-id"
-export CF_ZONE_ID="your-zone-id"
 ```
 
 ### Create APL-Core Values File
@@ -724,31 +723,23 @@ Create `apl-values.yaml`:
 
 ```yaml
 cluster:
-  name: talos-cluster
+  name: paas
   provider: custom
-  domainSuffix: 29.talos.vaheed.net
-
+  domainSuffix: paas.vaheed.net
+otomi:
+  hasExternalDNS: true
 dns:
   domainFilters:
-    - 29.talos.vaheed.net
+    - vaheed.net
   provider:
     cloudflare:
-      apiToken: ${CF_API_TOKEN}
-      accountId: ${CF_ACCOUNT_ID}
-      zoneId: ${CF_ZONE_ID}
-
+      apiToken: $CF_API_TOKEN
+      proxied: false
 apps:
-  metrics-server:
-    enabled: false
-
-# Longhorn storage already installed
-storage:
-  storageClassName: longhorn
-
-# APL-Core specific settings
-otomi:
-  adminPassword: "change-me-in-production"
-  hasExternalDNS: true
+  cert-manager:
+    issuer: letsencrypt
+    stage: production
+    email: admin@vaheed.net
 ```
 
 ### Install APL-Core
@@ -776,7 +767,7 @@ kubectl --kubeconfig=kubeconfig wait --for=condition=ready pod \
 
 # Get APL-Core console URL
 echo "APL-Core Console will be available at:"
-echo "https://paas.29.talos.vaheed.net"
+echo "https:/paas.vaheed.net"
 echo ""
 echo "Default credentials:"
 echo "Username: otomi-admin"
@@ -806,7 +797,7 @@ curl -k https://paas.29.talos.vaheed.net
 
 ### APL-Core Post-Installation
 
-1. **Access Console**: Navigate to `https://paas.29.talos.vaheed.net`
+1. **Access Console**: Navigate to `https://paas.vaheed.net`
 2. **Login**: Use `otomi-admin` and the password from the secret
 3. **Configure Teams**: Create teams for developers
 4. **Setup Applications**: Deploy applications through the console
