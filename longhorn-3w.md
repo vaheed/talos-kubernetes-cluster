@@ -553,6 +553,32 @@ kubectl --kubeconfig=kubeconfig top nodes
 
 ### Install Longhorn
 
+longhorn-disk.yaml
+```bash
+
+machine:
+  disks:
+    - device: /dev/sdb
+      partitions:
+        - mountpoint: /var/lib/longhorn
+
+  kubelet:
+    extraMounts:
+      - destination: /var/lib/longhorn
+        type: bind
+        source: /var/lib/longhorn
+        options:
+          - bind
+          - rshared
+          - rw
+```
+```bash
+talosctl --talosconfig talosconfig patch machineconfig \
+  -n 192.168.29.21 \
+  -e 192.168.29.21 \
+  --patch @longhorn-disk.yaml
+```
+
 ```bash
 # Add Longhorn Helm repository
 helm repo add longhorn https://charts.longhorn.io
