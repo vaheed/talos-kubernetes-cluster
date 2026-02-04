@@ -736,11 +736,28 @@ kubectl create secret generic apl-sops-secrets \
   -n apl-operator
 ```
 
-### Configure Cloudflare DNS Token
-
 ```bash
-# Set your Cloudflare credentials
-export CF_API_TOKEN="your-cloudflare-api-token"
+# Add Helm ownership labels to existing namespaces
+kubectl --kubeconfig=kubeconfig label namespace apl-operator \
+  app.kubernetes.io/managed-by=Helm
+
+kubectl --kubeconfig=kubeconfig annotate namespace apl-operator \
+  meta.helm.sh/release-name=apl \
+  meta.helm.sh/release-namespace=apl-system
+
+kubectl --kubeconfig=kubeconfig label namespace apl-system \
+  app.kubernetes.io/managed-by=Helm
+
+kubectl --kubeconfig=kubeconfig annotate namespace apl-system \
+  meta.helm.sh/release-name=apl \
+  meta.helm.sh/release-namespace=apl-system
+
+kubectl --kubeconfig=kubeconfig label namespace gitea \
+  app.kubernetes.io/managed-by=Helm
+
+kubectl --kubeconfig=kubeconfig annotate namespace gitea \
+  meta.helm.sh/release-name=apl \
+  meta.helm.sh/release-namespace=apl-system
 ```
 
 ### Create APL-Core Values File
@@ -751,16 +768,21 @@ Create `apl-values.yaml`:
 cluster:
   name: paas
   provider: custom
-  domainSuffix: paas.vaheed.net
+  domainSuffix: 29.talos.vaheed.net
+
 otomi:
   hasExternalDNS: true
+
 dns:
   domainFilters:
-    - vaheed.net
+    - 29.talos.vaheed.net
   provider:
     cloudflare:
-      apiToken: $CF_API_TOKEN
+      apiToken: "your-actual-cloudflare-api-token"
+      accountId: "your-cloudflare-account-id"
+      zoneId: "your-cloudflare-zone-id"
       proxied: false
+
 apps:
   cert-manager:
     issuer: letsencrypt
@@ -782,7 +804,8 @@ helm install apl apl/apl \
   --kubeconfig=kubeconfig \
   -f apl-values.yaml \
   --wait \
-  --timeout=30m
+  --timeout=30m \
+  --debug
 
 # Wait for APL-Core to be ready
 echo "Waiting for APL-Core installation to complete..."
