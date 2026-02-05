@@ -706,6 +706,7 @@ Before installing APL-Core, ensure you have:
 kubectl --kubeconfig=kubeconfig create ns apl-system
 kubectl --kubeconfig=kubeconfig create ns apl-operator
 kubectl --kubeconfig=kubeconfig create ns gitea
+kubectl --kubeconfig=kubeconfig create ns keycloak
 
 kubectl label namespace apl-operator \
   pod-security.kubernetes.io/enforce=privileged \
@@ -718,6 +719,11 @@ kubectl label namespace apl-system \
   pod-security.kubernetes.io/warn=privileged \
   --overwrite
 kubectl label namespace gitea \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged \
+  --overwrite
+kubectl label namespace keycloak \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/audit=privileged \
   pod-security.kubernetes.io/warn=privileged \
@@ -756,6 +762,13 @@ kubectl --kubeconfig=kubeconfig label namespace gitea \
   app.kubernetes.io/managed-by=Helm
 
 kubectl --kubeconfig=kubeconfig annotate namespace gitea \
+  meta.helm.sh/release-name=apl \
+  meta.helm.sh/release-namespace=apl-system
+
+kubectl --kubeconfig=kubeconfig label namespace keycloak \
+  app.kubernetes.io/managed-by=Helm
+
+kubectl --kubeconfig=kubeconfig annotate namespace keycloak \
   meta.helm.sh/release-name=apl \
   meta.helm.sh/release-namespace=apl-system
 ```
